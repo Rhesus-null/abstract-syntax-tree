@@ -1,3 +1,4 @@
+use std::fmt::Pointer;
 use colored::Colorize;
 
 #[derive(Debug, Clone)] #[allow(unused)]
@@ -48,15 +49,57 @@ fn main() {
     tokens.push(Token::Assignment);
     tokens.push(Token::LiteralInt("12".to_string()));
     tokens.push(Token::Add);
-    // tokens.push(Token::LiteralInt("34".to_string()));
-    // tokens.push(Token::Add);
-    // tokens.push(Token::LiteralInt("34".to_string()));
-    // tokens.push(Token::Minus);
-    // tokens.push(Token::LiteralInt("11".to_string()));
-    // tokens.push(Token::Multiply);
-    // tokens.push(Token::LiteralInt("5".to_string()));
-    // tokens.push(Token::Divide);
-    // tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
+    tokens.push(Token::LiteralInt("11".to_string()));
+    tokens.push(Token::Multiply);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Divide);
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
+    tokens.push(Token::LiteralInt("11".to_string()));
+    tokens.push(Token::Multiply);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
+    tokens.push(Token::LiteralInt("11".to_string()));
+    tokens.push(Token::Multiply);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Divide);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
+    tokens.push(Token::LiteralInt("11".to_string()));
+    tokens.push(Token::Multiply);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Divide);
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
+    tokens.push(Token::LiteralInt("11".to_string()));
+    tokens.push(Token::Multiply);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
+    tokens.push(Token::LiteralInt("11".to_string()));
+    tokens.push(Token::Multiply);
+    tokens.push(Token::LiteralInt("5".to_string()));
+    tokens.push(Token::Divide);
+    tokens.push(Token::LiteralInt("757572".to_string()));
     let parser = Parser::new(tokens);
     parser.to_ast();
 }
@@ -96,12 +139,14 @@ enum Expression {
 struct Parser {
     tokens : Vec<Token>,
     position : usize,
+
     stack_trace: Option<Vec<String>>,
+    depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens : Vec<Token>) -> Self {
-        Self { tokens, position: 0, stack_trace: None}
+        Self { tokens, position: 0, stack_trace: None, depth: 0}
     }
 
     /// turn the containing Token to ast
@@ -135,26 +180,48 @@ impl Parser {
     }
 
     fn parse_expression(&mut self, bp: u8) -> Expression {
+        self.trace_mut(|c, s| {
+            c.push(format!("{} - {:>width$}{} -> {}: CALLING PARSE_NUD", s.depth, "", format!("[parse_expression](bp: {})", bp).bright_magenta(), "START".bright_blue(), width = s.depth));
+        });
+
+
         let mut left = self.parse_nud();
-        self.trace(|c| c.push(format!("{} -> NUD: '{:?}'",format!("[parse_expression](bp: {})", bp).bright_magenta(), left)));
+        self.trace_mut(|c, s| {
+            c.push(format!("{} - {:>width$} | PARSE_NUD -> '{:?}'", s.depth, "", left, width = s.depth));
+            c.push(format!("{} - {:>width$} | PEEK -> '{:?}', Binding Power -> {:?}", s.depth, "", s.peek(), s.peek().get_bp(), width = s.depth));
+        });
         loop {
             if self.end() {
-                self.trace(|c| c.push(format!("{} -> EOF: return '{:?}'",format!("[parse_expression](bp: {})", bp).bright_magenta(), left)));
                 break;
             }
-            let peek = self.peek();
-            if let Some((lbp, rbp)) = peek.get_bp() {
+            if let Some((lbp, rbp)) = self.peek().get_bp() {
                 if lbp < bp {
                     break;
                 }
+                self.depth += 1;
                 left = self.parse_led(left, rbp);
+                self.trace_mut(|c, s| {
+                    let mut t = format!("{:?}", left);
+                    if t.len() >= 170 {
+                        t = String::from("[To Long]");
+                    }
+                    c.push(format!("{} - {} -> '{}'", s.depth, "[parse_led]".bright_magenta(), t));
+                });
             } else { break }
         }
+        self.trace_mut(|c, s| {
+            let mut t = format!("{:?}", left);
+            if t.len() >= 170 {
+                t = String::from("[To Long]");
+            }
+
+            c.push(format!("{} - {:>width$}{} -> {}: '{}'", s.depth, "", format!("[parse_expression](bp: {})", bp).bright_magenta(), "RETURN".bright_red(), t, width = s.depth));
+            s.depth =  s.depth.saturating_sub(1);
+        });
         left
     }
 
     fn parse_nud(&mut self) -> Expression {
-        self.trace(|c| c.push(format!("{} -> Called", "[parse_nud]".bright_magenta())));
         match self.next().consume() {
             Token::LiteralStr(s) => Expression::LiteralStr(s),
             Token::Identifier(s) => Expression::Identifier(s),
@@ -170,8 +237,7 @@ impl Parser {
     }
 
     fn parse_led(&mut self, left: Expression, rbp: u8) -> Expression {
-        self.trace(|c| c.push(format!("{} -> Called",format!("[parse_led](rbp: {})", rbp).bright_magenta())));
-        match self.next().consume() {
+         match self.next().consume() {
             Token::Assignment => {
                 Expression::VariableAssignment {
                     left: Box::new(left),
@@ -215,20 +281,13 @@ impl Parser {
     fn next(&mut self) -> &mut Self {
         if self.position + 1 < self.tokens.len() {
             self.position += 1;
-
-            self.trace(|t| t.push(format!("{} -> increment position by one", "[next]".bright_black())));
         }
         self
     }
 
     /// consume the current item, replacing [Token::NONE] in its place
     fn consume(&mut self) -> Token {
-        let t = std::mem::replace(&mut self.tokens[self.position], Token::NONE);
-        self.trace_mut(|v, s| {
-            v.push(format!("{}\n| consumed '{:?}'", "[consume]".bright_black(), t));
-            v.push(format!("| Vec: {:?}", s.tokens))
-        });
-        t
+        std::mem::replace(&mut self.tokens[self.position], Token::NONE)
     }
 
     /// peek next.

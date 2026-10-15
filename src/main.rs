@@ -19,8 +19,9 @@ enum Token {
     And,
     Or,
     Dot,
-    OpenBrace,
-    CloseBrace,
+    OpenParenthesis,
+    CloseParenthesis,
+    Comma,
 
     NONE
 }
@@ -31,6 +32,7 @@ impl Token {
     pub fn get_single_bp(&self) -> Option<u8> {
         match self {
             Token::Not => Some(40),
+            Token::OpenParenthesis => Some(80),
             _ => None,
         }
     }
@@ -47,7 +49,10 @@ impl Token {
 
             Token::And => Some((5, 5)),
             Token::Or => Some((4, 4)),
+            Token::Comma => Some((0, 0)),
             Token::Dot => Some((60,60)),
+            Token::OpenParenthesis => Some((80, 80)),
+            Token::CloseParenthesis => Some((0, 0)),
             _ => None,
         }
     }
@@ -67,11 +72,12 @@ impl Token {
             Token::And => "And",
             Token::Or => "Or",
             Token::Dot => "Dot",
-            Token::OpenBrace => "OpenBrace",
-            Token::CloseBrace => "CloseBrace",
+            Token::OpenParenthesis => "OpenParenthesis",
+            Token::CloseParenthesis => "CloseParenthesis",
             Token::NONE => "None",
             Token::If => "If",
             Token::Not => "Not",
+            Token::Comma => "Comma",
 
 
         }
@@ -80,40 +86,53 @@ impl Token {
 
 fn main() {
     let mut tokens : Vec<Token> = Vec::new();
-
-    if 001 != 002 && 003 * 004 == 005 || true {
-
-    }
     tokens.push(Token::If);
-    // tokens.push(Token::Identifier("ab".to_string()));
-    // tokens.push(Token::Assignment);
-    // tokens.push(Token::LiteralInt("12".to_string()));
-    // tokens.push(Token::Add);
-    // tokens.push(Token::LiteralInt("34".to_string()));
-    // tokens.push(Token::Add);
-    // tokens.push(Token::LiteralInt("341".to_string()));
-    // tokens.push(Token::Minus);
+    tokens.push(Token::Identifier("ab".to_string()));
+    tokens.push(Token::Assignment);
+    // tokens.push(Token::Or);
+    // tokens.push(Token::LiteralInt("101".to_string()));
+    // tokens.push(Token::Multiply);
+    // tokens.push(Token::LiteralInt("102".to_string()));
+    // tokens.push(Token::Equal);
+    // tokens.push(Token::LiteralInt("103".to_string()));
+    // tokens.push(Token::Or);
+    // tokens.push(Token::Identifier("Object".to_string()));
+    // tokens.push(Token::Dot);
+    // tokens.push(Token::Identifier("String".to_string()));
+    // tokens.push(Token::Dot);
+    // tokens.push(Token::Identifier("Len".to_string()));
+    tokens.push(Token::Identifier("Object".to_string()));
+    tokens.push(Token::Dot);
+    tokens.push(Token::Identifier("String".to_string()));
+    tokens.push(Token::Dot);
+    tokens.push(Token::Identifier("Len".to_string()));
+    tokens.push(Token::OpenParenthesis);
+    tokens.push(Token::OpenParenthesis);
+    tokens.push(Token::LiteralStr("sadawdawd".to_string()));
+    tokens.push(Token::Comma);
+    tokens.push(Token::LiteralInt("500".to_string()));
+    tokens.push(Token::CloseParenthesis);
+    tokens.push(Token::Comma);
+    tokens.push(Token::LiteralInt("12".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("34".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("341".to_string()));
+    tokens.push(Token::Minus);
     tokens.push(Token::LiteralInt("001".to_string()));
     tokens.push(Token::NotEqual);
     tokens.push(Token::LiteralInt("002".to_string()));
     tokens.push(Token::And);
     tokens.push(Token::LiteralInt("003".to_string()));
     tokens.push(Token::Multiply);
+    tokens.push(Token::OpenParenthesis);
     tokens.push(Token::LiteralInt("004".to_string()));
+    tokens.push(Token::Add);
+    tokens.push(Token::LiteralInt("005".to_string()));
+    tokens.push(Token::CloseParenthesis);
     tokens.push(Token::Equal);
     tokens.push(Token::LiteralInt("005".to_string()));
-    tokens.push(Token::Or);
-    tokens.push(Token::LiteralInt("101".to_string()));
-    tokens.push(Token::Multiply);
-    tokens.push(Token::LiteralInt("102".to_string()));
-    tokens.push(Token::Equal);
-    tokens.push(Token::LiteralInt("103".to_string()));
-    tokens.push(Token::Or);
-    tokens.push(Token::Identifier("Object".to_string()));
-    tokens.push(Token::Dot);
-    tokens.push(Token::Identifier("String".to_string()));
-    tokens.push(Token::Dot);
-    tokens.push(Token::Identifier("Len".to_string()));
+    tokens.push(Token::CloseParenthesis);
     let parser = Parser::new(tokens);
     parser.to_ast();
 }
@@ -159,6 +178,12 @@ enum Expression {
         left: Box<Expression>,
         right: Box<Expression>
     },
+    MemberCall {
+        left: Box<Expression>,
+        right: Box<Expression>
+    },
+    Tuple(Vec<Expression>),
+    Parenthesis(Box<Expression>),
     And {
         left: Box<Expression>,
         right: Box<Expression>
@@ -193,7 +218,6 @@ impl Parser {
 
     fn parse_expression(&mut self, _d: &str, bp: u8) -> Expression {
         let mut left = self.parse_nud();
-        print!("{:#?}", left);
         loop {
             if self.end() {
                 break;
@@ -207,12 +231,33 @@ impl Parser {
         }
         left
     }
-
+    fn parse_parenthesis(&mut self) -> Expression {
+        let mut list = Vec::<Expression>::new();
+        loop {
+            if self.end() { break }
+            if let Token::CloseParenthesis = self.peek() {
+                self.next().consume();
+                break
+            }
+            let t = self.parse_expression(Token::OpenParenthesis.get_name(), 1);
+            list.push(t);
+            if let Token::Comma = self.peek() {
+                self.next().consume();
+            }
+        }
+        if list.len() == 1 {
+            return Expression::Parenthesis(Box::new(list.pop().unwrap()));
+        }
+        Expression::Tuple(list)
+    }
     fn parse_nud(&mut self) -> Expression {
         match self.next().consume() {
             Token::LiteralStr(s) => Expression::LiteralStr(s),
             Token::Identifier(s) => Expression::Identifier(s),
             Token::Not => Expression::Not(Box::new(self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap()))),
+            Token::OpenParenthesis => {
+                self.parse_parenthesis()
+            }
             Token::LiteralInt(s) => {
                 let Ok(s) = s.parse::<i64>() else {
                     panic!("Could not parse number");
@@ -283,6 +328,12 @@ impl Parser {
                  Expression::AccessMember {
                      left: Box::new(left),
                      right: Box::new(self.parse_expression(Token::Dot.get_name(),rbp))
+                 }
+             }
+             Token::OpenParenthesis => {
+                 Expression::MemberCall {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_parenthesis()),
                  }
              }
             _ => {

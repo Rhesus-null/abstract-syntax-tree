@@ -23,6 +23,11 @@ enum Token {
     CloseParenthesis,
     Comma,
 
+    GreaterOrEqual,
+    LessOrEqual,
+    GreaterThan,
+    LessThan,
+
     NONE
 }
 
@@ -39,13 +44,18 @@ impl Token {
     pub fn get_bp(&self) -> Option<(u8, u8)> {
         match self {
             Token::Assignment => Some((2, 1)),
-            Token::Add => Some((10, 10)),
-            Token::Minus => Some((10, 10)),
-            Token::Multiply => Some((20, 20)),
-            Token::Divide => Some((20, 20)),
+            Token::Add => Some((20, 20)),
+            Token::Minus => Some((20, 20)),
+            Token::Multiply => Some((30, 30)),
+            Token::Divide => Some((30, 30)),
 
             Token::Equal => Some((8, 8)),
             Token::NotEqual => Some((8, 8)),
+
+            Token::GreaterOrEqual => Some((10, 10)),
+            Token::LessOrEqual => Some((10, 10)),
+            Token::GreaterThan => Some((10, 10)),
+            Token::LessThan => Some((10, 10)),
 
             Token::And => Some((5, 5)),
             Token::Or => Some((4, 4)),
@@ -59,10 +69,10 @@ impl Token {
 
     pub fn get_name(&self) -> &str {
         match self {
-            Token::Identifier(name) => "identifier",
-            Token::Assignment => "assignment",
-            Token::LiteralStr(name) => "string literal",
-            Token::LiteralInt(name) => "integer literal",
+            Token::Identifier(name) => "Identifier",
+            Token::Assignment => "Assignment",
+            Token::LiteralStr(name) => "LiteralStr",
+            Token::LiteralInt(name) => "LiteralInt",
             Token::Add => "Add",
             Token::Minus => "Minus",
             Token::Multiply => "Multiply",
@@ -78,7 +88,10 @@ impl Token {
             Token::If => "If",
             Token::Not => "Not",
             Token::Comma => "Comma",
-
+            Token::GreaterOrEqual => "GreaterOrEqual",
+            Token::LessOrEqual => "LessOrEqual",
+            Token::GreaterThan => "GreaterThan",
+            Token::LessThan => "LessThan",
 
         }
     }
@@ -111,6 +124,18 @@ fn main() {
     tokens.push(Token::LiteralStr("sadawdawd".to_string()));
     tokens.push(Token::Comma);
     tokens.push(Token::LiteralInt("500".to_string()));
+    tokens.push(Token::CloseParenthesis);
+    tokens.push(Token::Comma);
+    tokens.push(Token::OpenParenthesis);
+    tokens.push(Token::LiteralInt("14".to_string()));
+    tokens.push(Token::GreaterOrEqual);
+    tokens.push(Token::LiteralInt("12".to_string()));
+    tokens.push(Token::Or);
+    tokens.push(Token::LiteralInt("10".to_string()));
+    tokens.push(Token::LessThan);
+    tokens.push(Token::LiteralInt("12".to_string()));
+    tokens.push(Token::Comma);
+    tokens.push(Token::LiteralStr("Development".to_string()));
     tokens.push(Token::CloseParenthesis);
     tokens.push(Token::Comma);
     tokens.push(Token::LiteralInt("12".to_string()));
@@ -171,6 +196,22 @@ enum Expression {
         right: Box<Expression>
     },
     NotEqual {
+        left: Box<Expression>,
+        right: Box<Expression>
+    },
+    GreaterOrEqual {
+        left: Box<Expression>,
+        right: Box<Expression>
+    },
+    LessOrEqual {
+        left: Box<Expression>,
+        right: Box<Expression>
+    },
+    GreaterThan {
+        left: Box<Expression>,
+        right: Box<Expression>
+    },
+    LessThan {
         left: Box<Expression>,
         right: Box<Expression>
     },
@@ -310,6 +351,30 @@ impl Parser {
                  Expression::NotEqual {
                      left: Box::new(left),
                      right: Box::new(self.parse_expression(Token::NotEqual.get_name(),rbp))
+                 }
+             }
+             Token::GreaterOrEqual => {
+                 Expression::GreaterOrEqual {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::GreaterOrEqual.get_name(),rbp))
+                 }
+             }
+             Token::LessOrEqual => {
+                 Expression::LessOrEqual {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::LessOrEqual.get_name(),rbp))
+                 }
+             }
+             Token::GreaterThan => {
+                 Expression::GreaterThan {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::GreaterThan.get_name(),rbp))
+                 }
+             }
+             Token::LessThan => {
+                 Expression::LessThan {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::LessThan.get_name(),rbp))
                  }
              }
              Token::And => {

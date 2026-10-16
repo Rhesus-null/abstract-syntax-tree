@@ -1,14 +1,13 @@
-use std::fmt::Pointer;
-use colored::Colorize;
+mod lexer;
 
 #[derive(Debug, Clone, PartialEq)] #[allow(unused)]
-enum Token {
+enum Token{
     If,
     Not,
     Identifier(String),
     Assignment,
     LiteralStr(String),
-    LiteralInt(String),
+    LiteralDigit(String),
     Add,
     Minus,
     Multiply,
@@ -73,7 +72,7 @@ impl Token {
             Token::Identifier(name) => "Identifier",
             Token::Assignment => "Assignment",
             Token::LiteralStr(name) => "LiteralStr",
-            Token::LiteralInt(name) => "LiteralInt",
+            Token::LiteralDigit(name) => "LiteralInt",
             Token::Add => "Add",
             Token::Minus => "Minus",
             Token::Multiply => "Multiply",
@@ -99,66 +98,7 @@ impl Token {
 
 fn main() {
     let mut tokens : Vec<Token> = Vec::new();
-    tokens.push(Token::If);
-    tokens.push(Token::Identifier("ab".to_string()));
-    tokens.push(Token::Assignment);
-    // tokens.push(Token::Or);
-    // tokens.push(Token::LiteralInt("101".to_string()));
-    // tokens.push(Token::Multiply);
-    // tokens.push(Token::LiteralInt("102".to_string()));
-    // tokens.push(Token::Equal);
-    // tokens.push(Token::LiteralInt("103".to_string()));
-    // tokens.push(Token::Or);
-    // tokens.push(Token::Identifier("Object".to_string()));
-    // tokens.push(Token::Dot);
-    // tokens.push(Token::Identifier("String".to_string()));
-    // tokens.push(Token::Dot);
-    // tokens.push(Token::Identifier("Len".to_string()));
-    tokens.push(Token::Identifier("Object".to_string()));
-    tokens.push(Token::Dot);
-    tokens.push(Token::Identifier("String".to_string()));
-    tokens.push(Token::Dot);
-    tokens.push(Token::Identifier("Len".to_string()));
-    tokens.push(Token::OpenParenthesis);
-    tokens.push(Token::OpenParenthesis);
-    tokens.push(Token::LiteralStr("sadawdawd".to_string()));
-    tokens.push(Token::Comma);
-    tokens.push(Token::LiteralInt("500".to_string()));
-    tokens.push(Token::CloseParenthesis);
-    tokens.push(Token::Comma);
-    tokens.push(Token::OpenParenthesis);
-    tokens.push(Token::LiteralInt("14".to_string()));
-    tokens.push(Token::GreaterOrEqual);
-    tokens.push(Token::LiteralInt("12".to_string()));
-    tokens.push(Token::Or);
-    tokens.push(Token::LiteralInt("10".to_string()));
-    tokens.push(Token::LessThan);
-    tokens.push(Token::LiteralInt("12".to_string()));
-    tokens.push(Token::Comma);
-    tokens.push(Token::LiteralStr("Development".to_string()));
-    tokens.push(Token::CloseParenthesis);
-    tokens.push(Token::Comma);
-    tokens.push(Token::LiteralInt("12".to_string()));
-    tokens.push(Token::Add);
-    tokens.push(Token::LiteralInt("34".to_string()));
-    tokens.push(Token::Add);
-    tokens.push(Token::LiteralInt("341".to_string()));
-    tokens.push(Token::Minus);
-    tokens.push(Token::LiteralInt("001".to_string()));
-    tokens.push(Token::NotEqual);
-    tokens.push(Token::LiteralInt("002".to_string()));
-    tokens.push(Token::And);
-    tokens.push(Token::LiteralInt("003".to_string()));
-    tokens.push(Token::Multiply);
-    tokens.push(Token::OpenParenthesis);
-    tokens.push(Token::LiteralInt("004".to_string()));
-    tokens.push(Token::Add);
-    tokens.push(Token::LiteralInt("005".to_string()));
-    tokens.push(Token::CloseParenthesis);
-    tokens.push(Token::Equal);
-    tokens.push(Token::LiteralInt("005".to_string()));
-    tokens.push(Token::Comma);
-    tokens.push(Token::CloseParenthesis);
+
     let parser = Parser::new(tokens);
     parser.to_ast();
 }
@@ -260,7 +200,6 @@ impl Parser {
 
     fn parse_expression(&mut self, _debug: &str, bp: u8) -> Expression {
         let mut left = self.parse_nud();
-        println!("{:#?}", left);
         loop {
             if self.end() {
                 break;
@@ -306,7 +245,7 @@ impl Parser {
             Token::Identifier(s) => Expression::Identifier(s),
             Token::Not => Expression::Not(Box::new(self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap()))),
             Token::OpenParenthesis => self.parse_parenthesis_or_tuple(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis")),
-            Token::LiteralInt(s) => {
+            Token::LiteralDigit(s) => {
                 let Ok(s) = s.parse::<i64>() else {
                     panic!("Could not parse number");
                 };

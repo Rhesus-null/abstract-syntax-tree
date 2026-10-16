@@ -1,7 +1,7 @@
 use std::fmt::Pointer;
 use colored::Colorize;
 
-#[derive(Debug, Clone)] #[allow(unused)]
+#[derive(Debug, Clone, PartialEq)] #[allow(unused)]
 enum Token {
     If,
     Not,
@@ -67,6 +67,7 @@ impl Token {
         }
     }
 
+    // Debug ONLY
     pub fn get_name(&self) -> &str {
         match self {
             Token::Identifier(name) => "Identifier",
@@ -92,7 +93,6 @@ impl Token {
             Token::LessOrEqual => "LessOrEqual",
             Token::GreaterThan => "GreaterThan",
             Token::LessThan => "LessThan",
-
         }
     }
 }
@@ -157,6 +157,7 @@ fn main() {
     tokens.push(Token::CloseParenthesis);
     tokens.push(Token::Equal);
     tokens.push(Token::LiteralInt("005".to_string()));
+    tokens.push(Token::Comma);
     tokens.push(Token::CloseParenthesis);
     let parser = Parser::new(tokens);
     parser.to_ast();
@@ -257,8 +258,9 @@ impl Parser {
         println!("{:#?}", self.parse_expression("START",0));
     }
 
-    fn parse_expression(&mut self, _d: &str, bp: u8) -> Expression {
+    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Expression {
         let mut left = self.parse_nud();
+        println!("{:#?}", left);
         loop {
             if self.end() {
                 break;
@@ -272,19 +274,26 @@ impl Parser {
         }
         left
     }
-    fn parse_parenthesis(&mut self) -> Expression {
+    fn parse_parenthesis_or_tuple(&mut self, _debug: Option<&str>) -> Expression {
         let mut list = Vec::<Expression>::new();
         loop {
-            if self.end() { break }
-            if let Token::CloseParenthesis = self.peek() {
+            if self.end() {
+                panic!("Expected '{}'", Token::CloseParenthesis.get_name());
+            }
+            if Token::CloseParenthesis == *self.peek() {
                 self.next().consume();
                 break
             }
-            let t = self.parse_expression(Token::OpenParenthesis.get_name(), 1);
-            list.push(t);
-            if let Token::Comma = self.peek() {
+            if list.len() > 0 && Token::Comma == *self.peek() {
                 self.next().consume();
+                if Token::CloseParenthesis == *self.peek() {
+                    self.next().consume();
+                    break
+                }
+            } else if list.len() > 0 && Token::Comma != *self.peek() {
+                panic!("Expected Comma got '{}' Instead", self.peek().get_name());
             }
+            list.push(self.parse_expression(_debug.unwrap_or("parse_parenthesis_or_tuple"), 1));
         }
         if list.len() == 1 {
             return Expression::Parenthesis(Box::new(list.pop().unwrap()));
@@ -296,9 +305,7 @@ impl Parser {
             Token::LiteralStr(s) => Expression::LiteralStr(s),
             Token::Identifier(s) => Expression::Identifier(s),
             Token::Not => Expression::Not(Box::new(self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap()))),
-            Token::OpenParenthesis => {
-                self.parse_parenthesis()
-            }
+            Token::OpenParenthesis => self.parse_parenthesis_or_tuple(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis")),
             Token::LiteralInt(s) => {
                 let Ok(s) = s.parse::<i64>() else {
                     panic!("Could not parse number");
@@ -311,36 +318,36 @@ impl Parser {
 
     fn parse_led(&mut self, left: Expression, rbp: u8) -> Expression {
          match self.next().consume() {
-            Token::Assignment => {
-                Expression::VariableAssignment {
+             Token::Assignment => {
+                 Expression::VariableAssignment {
                     left: Box::new(left),
                     right: Box::new(self.parse_expression(Token::Assignment.get_name(),rbp))
-                }
-            }
-            Token::Add => {
-                Expression::Add {
-                    left: Box::new(left),
-                    right: Box::new(self.parse_expression(Token::Add.get_name(),rbp))
-                }
-            },
-            Token::Minus => {
-                Expression::Minus {
-                    left: Box::new(left),
-                    right: Box::new(self.parse_expression(Token::Minus.get_name(),rbp))
-                }
-            }
-            Token::Multiply => {
-                Expression::Multiply {
-                    left: Box::new(left),
-                    right: Box::new(self.parse_expression(Token::Multiply.get_name(),rbp))
-                }
-            }
-            Token::Divide => {
-                Expression::Divide {
-                    left: Box::new(left),
-                    right: Box::new(self.parse_expression(Token::Divide.get_name(),rbp))
-                }
-            },
+                 }
+             }
+             Token::Add => {
+                 Expression::Add {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::Add.get_name(),rbp))
+                 }
+             },
+             Token::Minus => {
+                 Expression::Minus {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::Minus.get_name(),rbp))
+                 }
+             }
+             Token::Multiply => {
+                 Expression::Multiply {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::Multiply.get_name(),rbp))
+                 }
+             }
+             Token::Divide => {
+                 Expression::Divide {
+                     left: Box::new(left),
+                     right: Box::new(self.parse_expression(Token::Divide.get_name(),rbp))
+                 }
+             },
              Token::Equal => {
                 Expression::Equal {
                     left: Box::new(left),
@@ -398,12 +405,12 @@ impl Parser {
              Token::OpenParenthesis => {
                  Expression::MemberCall {
                      left: Box::new(left),
-                     right: Box::new(self.parse_parenthesis()),
+                     right: Box::new(self.parse_parenthesis_or_tuple(Some("parse_led.parse_parenthesis_or_tuple.MemberCall"))),
                  }
              }
-            _ => {
-                Expression::None
-            }
+             _ => {
+                 Expression::None
+             }
         }
     }
 

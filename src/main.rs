@@ -99,14 +99,13 @@ impl Token {
 }
 
 fn main() {
-    let mut lexer = Lexer::new(b"if a >= c && c < f || !A.B.C( (32 * (3 + 4), \"HELPPP\"), 45 > 32 && 32 < 45) ").parse().unwrap();
+    let mut lexer = Lexer::new(b"if A.B.C(32 * 4) / 3 ").parse().unwrap();
     println!("{:#?}", lexer);
     let ast = Parser::new(lexer).to_ast();
 }
 
 #[derive(Debug)] #[allow(unused)]
 enum Expression {
-    None,
     Identifier(String),
     LiteralStr(String),
     LiteralInt(i64),
@@ -180,12 +179,13 @@ enum Expression {
 
 struct Parser {
     tokens : Vec<Token>,
+    parse_error: Vec<String>,
     position : usize,
 }
 
 impl Parser {
     pub fn new(tokens : Vec<Token>) -> Self {
-        Self { tokens, position: 0}
+        Self { tokens, parse_error: Vec::new(), position: 0}
     }
 
     /// turn the containing Token to ast
@@ -199,26 +199,29 @@ impl Parser {
         println!("{:#?}", self.parse_expression("START",0));
     }
 
-    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Expression {
-        let mut left = self.parse_nud();
+    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Result<Expression, &'static str> {
+        let mut rawleft= self.parse_nud();
         loop {
-            if self.end() {
-                break;
-            }
-            if let Some((lbp, rbp)) = self.peek().get_bp() {
-                if lbp < bp {
-                    break;
+            if let Ok(left) = rawleft {
+                if self.end() {
+                    return Ok(left);
                 }
-                left = self.parse_led(left, rbp);
-            } else { break }
+                if let Some((lbp, rbp)) = self.peek().get_bp() {
+                    if lbp < bp {
+                        return  Ok(left);
+                    }
+                    rawleft = self.parse_led(left, rbp);
+                } else { return  Ok(left); }
+            } else {
+                return Err(rawleft.unwrap_err())
+            }
         }
-        left
     }
-    fn parse_parenthesis_or_tuple(&mut self, _debug: Option<&str>) -> Expression {
+    fn parse_parenthesis_or_tuple(&mut self, _debug: Option<&str>) -> Result<Expression, &'static str> {
         let mut list = Vec::<Expression>::new();
         loop {
             if self.end() {
-                panic!("Expected '{}'", Token::CloseParenthesis.get_name());
+                return Err("Unclosed 'OpenParenthesis' when reached EOF.");
             }
             if Token::CloseParenthesis == *self.peek() {
                 self.next().consume();
@@ -231,126 +234,186 @@ impl Parser {
                     break
                 }
             } else if list.len() > 0 && Token::Comma != *self.peek() {
-                panic!("Expected Comma got '{}' Instead", self.peek().get_name());
+                return Err("Expected Comma For Tuple.");
             }
-            list.push(self.parse_expression(_debug.unwrap_or("parse_parenthesis_or_tuple"), 1));
+            let result = self.parse_expression(_debug.unwrap_or("parse_parenthesis_or_tuple"), 1);
+            if let Ok(result) = result {
+                list.push(result);
+            } else {
+                return Err(result.unwrap_err())
+            }
         }
         if list.len() == 1 {
-            return Expression::Parenthesis(Box::new(list.pop().unwrap()));
+            return Ok(Expression::Parenthesis(Box::new(list.pop().unwrap())));
         }
-        Expression::Tuple(list)
+        Ok(Expression::Tuple(list))
     }
-    fn parse_nud(&mut self) -> Expression {
+    fn parse_nud(&mut self) -> Result<Expression, &'static str> {
         match self.next().consume() {
-            Token::LiteralStr(s) => Expression::LiteralStr(s),
-            Token::Identifier(s) => Expression::Identifier(s),
-            Token::Not => Expression::Not(Box::new(self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap()))),
-            Token::OpenParenthesis => self.parse_parenthesis_or_tuple(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis")),
+            Token::LiteralStr(s) => Ok(Expression::LiteralStr(s)),
+            Token::Identifier(s) => Ok(Expression::Identifier(s)),
+            Token::Not => {
+                let result = self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap());
+                if let Ok(result) = result {
+                    return Ok(Expression::Not(Box::new(result)))
+                }
+                Err(result.unwrap_err())
+            },
+            Token::OpenParenthesis => {
+                let result =self.parse_parenthesis_or_tuple(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis"));
+                if let Ok(result) = result {
+                    return Ok(result);
+                }
+                Err(result.unwrap_err())
+            },
             Token::LiteralDigit(s) => {
                 let Ok(s) = s.parse::<i64>() else {
-                    panic!("Could not parse number");
+                    return Err("Cannot Parse To Number");
                 };
-                Expression::LiteralInt(s)
+                Ok(Expression::LiteralInt(s))
             },
-            _ => Expression::None,
+            _ => Err("Error"),
         }
     }
 
-    fn parse_led(&mut self, left: Expression, rbp: u8) -> Expression {
+    fn parse_led(&mut self, left: Expression, rbp: u8) ->  Result<Expression, &'static str> {
          match self.next().consume() {
              Token::Assignment => {
-                 Expression::VariableAssignment {
+                 let Ok(result)=self.parse_expression(Token::Assignment.get_name(),rbp)else {
+                     return Err("Could not parse Assignment");
+                 };
+                 Ok(Expression::VariableAssignment {
                     left: Box::new(left),
-                    right: Box::new(self.parse_expression(Token::Assignment.get_name(),rbp))
-                 }
+                    right: Box::new(result)
+                 })
              }
              Token::Add => {
-                 Expression::Add {
+                 let Ok(result) =self.parse_expression(Token::Add.get_name(),rbp) else {
+                     return Err("Could not parse Add");
+                 };
+                 Ok(Expression::Add {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::Add.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              },
              Token::Minus => {
-                 Expression::Minus {
+                 let Ok(result) =self.parse_expression(Token::Minus.get_name(),rbp) else {
+                     return Err("Could not parse Minus");
+                 };
+                 Ok(Expression::Minus {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::Minus.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::Multiply => {
-                 Expression::Multiply {
+                 let Ok(result) =self.parse_expression(Token::Multiply.get_name(),rbp) else {
+                     return Err("Could not parse Multiply");
+                 };
+                 Ok(Expression::Multiply {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::Multiply.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::Divide => {
-                 Expression::Divide {
+                 let Ok(result) =self.parse_expression(Token::Divide.get_name(),rbp) else {
+                     return Err("Could not parse Divide");
+                 };
+                 Ok(Expression::Divide {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::Divide.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              },
              Token::Equal => {
-                Expression::Equal {
-                    left: Box::new(left),
-                    right: Box::new(self.parse_expression(Token::Equal.get_name(),rbp))
-                }
+                 let Ok(result) =self.parse_expression(Token::Equal.get_name(),rbp) else {
+                     return Err("Could not parse Equal");
+                 };
+                 Ok(Expression::Equal {
+                     left: Box::new(left),
+                     right: Box::new(result)
+                 })
              }
              Token::NotEqual => {
-                 Expression::NotEqual {
+                 let Ok(result) =self.parse_expression(Token::NotEqual.get_name(),rbp) else {
+                     return Err("Could not parse NotEqual");
+                 };
+                 Ok(Expression::NotEqual {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::NotEqual.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::GreaterOrEqual => {
-                 Expression::GreaterOrEqual {
+                 let Ok(result) =self.parse_expression(Token::GreaterOrEqual.get_name(),rbp) else {
+                     return Err("Could not parse GreaterOrEqual");
+                 };
+                 Ok(Expression::GreaterOrEqual {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::GreaterOrEqual.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::LessOrEqual => {
-                 Expression::LessOrEqual {
+                 let Ok(result) =self.parse_expression(Token::LessOrEqual.get_name(),rbp) else {
+                     return Err("Could not parse LessOrEqual");
+                 };
+                 Ok(Expression::LessOrEqual {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::LessOrEqual.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::GreaterThan => {
-                 Expression::GreaterThan {
+                 let Ok(result) =self.parse_expression(Token::GreaterThan.get_name(),rbp) else {
+                     return Err("Could not parse GreaterThan");
+                 };
+                 Ok(Expression::GreaterThan {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::GreaterThan.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::LessThan => {
-                 Expression::LessThan {
+                 let Ok(result) =self.parse_expression(Token::LessThan.get_name(),rbp) else {
+                     return Err("Could not parse LessThan");
+                 };
+                 Ok(Expression::LessThan {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::LessThan.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::And => {
-                 Expression::And {
+                 let Ok(result) =self.parse_expression(Token::And.get_name(),rbp) else {
+                     return Err("Could not parse And");
+                 };
+                 Ok(Expression::And {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::And.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::Or => {
-                 Expression::Or {
+                 let Ok(result) =self.parse_expression(Token::Or.get_name(),rbp) else {
+                     return Err("Could not parse Or");
+                 };
+                 Ok(Expression::Or {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::Or.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::Dot => {
-                 Expression::AccessMember {
+                 let Ok(result) =self.parse_expression(Token::Dot.get_name(),rbp) else {
+                     return Err("Could not parse AccessMember");
+                 };
+                 Ok(Expression::AccessMember {
                      left: Box::new(left),
-                     right: Box::new(self.parse_expression(Token::Dot.get_name(),rbp))
-                 }
+                     right: Box::new(result)
+                 })
              }
              Token::OpenParenthesis => {
-                 Expression::MemberCall {
+                 let Ok(result) =self.parse_parenthesis_or_tuple(Some("membercall")) else {
+                     return Err("Could not parse MemberCall");
+                 };
+                 Ok(Expression::MemberCall {
                      left: Box::new(left),
-                     right: Box::new(self.parse_parenthesis_or_tuple(Some("parse_led.parse_parenthesis_or_tuple.MemberCall"))),
-                 }
+                     right: Box::new(result)
+                 })
              }
-             _ => {
-                 Expression::None
-             }
+             T => {Err("")}
         }
     }
 

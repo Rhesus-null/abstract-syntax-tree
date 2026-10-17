@@ -1,3 +1,5 @@
+use crate::lexer::Lexer;
+
 mod lexer;
 
 #[derive(Debug, Clone, PartialEq)] #[allow(unused)]
@@ -97,10 +99,9 @@ impl Token {
 }
 
 fn main() {
-    let mut tokens : Vec<Token> = Vec::new();
-
-    let parser = Parser::new(tokens);
-    parser.to_ast();
+    let mut lexer = Lexer::new(b"if a >= c && c < f || !A.B.C( (32 * (3 + 4), \"HELPPP\"), 45 > 32 && 32 < 45) ").parse().unwrap();
+    println!("{:#?}", lexer);
+    let ast = Parser::new(lexer).to_ast();
 }
 
 #[derive(Debug)] #[allow(unused)]

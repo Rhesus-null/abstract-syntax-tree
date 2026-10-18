@@ -5,16 +5,17 @@ pub struct Lexer<'a> {
     raw: &'a[u8],
 
     parse_error: Vec<&'a str>,
-    position: usize
+    position: usize,
+    is_end: bool,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: 0}
+        Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: 0, is_end: false}
     }
 
     pub fn parse(mut self) -> Result<Vec<Token>, Vec<&'a str>> {
-        while !self.end() {
+        while !self.end()  {
             if self.get().is_ascii_whitespace() {
                 self.next();
                 continue;
@@ -28,6 +29,7 @@ impl<'a> Lexer<'a> {
             };
             self.tokens.push(result);
         }
+
         if self.parse_error.is_empty() {
             Ok(self.tokens)
         } else {
@@ -38,6 +40,7 @@ impl<'a> Lexer<'a> {
     fn cast_keyword(&mut self, string: &str) -> Option<Token> {
         match string {
             "if" => Some(Token::If),
+            "let" => Some(Token::Let),
             _ => None
         }
     }
@@ -50,7 +53,8 @@ impl<'a> Lexer<'a> {
             } else {
                 return self.cast_keyword(unsafe { str::from_utf8_unchecked(&*buffer) }).unwrap_or(Token::Identifier(unsafe { String::from_utf8_unchecked(buffer) }))
             }
-            if self.end() {
+
+            if self.raw_end() {
                 return self.cast_keyword(unsafe { str::from_utf8_unchecked(&*buffer) }).unwrap_or(Token::Identifier(unsafe { String::from_utf8_unchecked(buffer) }))
             }
             self.next();
@@ -65,7 +69,7 @@ impl<'a> Lexer<'a> {
             } else {
                 return Token::LiteralDigit(unsafe { String::from_utf8_unchecked(buffer) })
             }
-            if self.end() {
+            if self.raw_end() {
                 return Token::LiteralDigit(unsafe { String::from_utf8_unchecked(buffer) })
             }
             self.next();
@@ -76,12 +80,13 @@ impl<'a> Lexer<'a> {
         let mut buffer = Vec::new();
         let mut c = *self.next().get();
         loop {
-            if c == b'"' { self.next(); break; }
-            buffer.push(c);
-            c = *self.next().get();
             if self.end() {
                 return Token::NONE /*TODO: Add error*/
             }
+
+            if c == b'"' { self.next(); break; }
+            buffer.push(c);
+            c = *self.next().get();
         }
         Token::LiteralStr(unsafe { String::from_utf8_unchecked(buffer) } /*TODO: This may cause safety problem*/)
     }
@@ -91,6 +96,8 @@ impl<'a> Lexer<'a> {
             (b',', _) => {self.next(); Token::Comma },
             (b'(', _) =>  {self.next(); Token::OpenParenthesis },
             (b')', _) =>  {self.next(); Token::CloseParenthesis },
+            (b'{', _) =>  {self.next(); Token::OpenBrace },
+            (b'}', _) =>  {self.next(); Token::CloseBrace },
             (b'.', _) =>  {self.next(); Token::Dot },
             (b'!', b'=') => {
                 self.next().next();
@@ -140,8 +147,13 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn end(&self) -> bool {
+    fn raw_end(&self) -> bool {
         self.position + 1 == self.raw.len()
+    }
+    fn end(&mut self) -> bool {
+        let end = self.is_end;
+        self.is_end = self.position + 1 == self.raw.len();
+        end
     }
     fn next(&mut self) -> &mut Self {
         if self.position + 1 < self.raw.len() {

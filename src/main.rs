@@ -1,7 +1,7 @@
 use crate::lexer::Lexer;
 
 mod lexer;
-
+pub mod i;
 #[derive(Debug, Clone, PartialEq)] #[allow(unused)]
 enum Token{
     If,
@@ -74,6 +74,13 @@ impl Token {
         }
     }
 
+    pub fn is_keyword(&self) -> bool {
+        match self {
+            Token::If | Token::Let => true,
+            _ => false
+        }
+    }
+
     // Debug ONLY
     pub fn get_name(&self) -> &str {
         match self {
@@ -108,7 +115,7 @@ impl Token {
 }
 
 fn main() {
-    let mut lexer = Lexer::new(b"  if Fwydawd.   C  (    12   )     {   }  if ab >      cd {    let t = ab      ( (  3   -   2  ),   ( 3 - 5  ))      }     ").parse().unwrap();
+    let mut lexer = Lexer::new(b"if a + (3 3 4 5)").parse().unwrap();
     println!("{:#?}", lexer);
     let ast = Parser::new(lexer).to_ast();
     println!("{:#?}", ast)
@@ -195,9 +202,41 @@ enum Statement {
     ImmutableVariableDeclaration {
         identifier: String,
         value: Expression
-    }
+    },
+    Any {t: Expression}
 }
 
+#[derive(Debug)]
+enum ErrorKind {
+    EOF,
+    Unclosed,
+    EOFandUnclosed,
+    MissingToken(Token),
+    CannotParse(Token)
+}
+
+struct ParseError {
+    kind: ErrorKind,
+    message: String
+}
+
+impl ParseError {
+    fn new(kind: ErrorKind, message: Option<String>) -> Self {
+        Self {kind, message: message.unwrap_or("".to_string())}
+    }
+    fn unwarp(self) -> (ErrorKind, String) {
+        (self.kind, self.message)
+    }
+
+    fn summary(self) -> String {
+        match self.kind {
+            ErrorKind::EOF => format!("End of File: '{}'", self.message),
+            ErrorKind::MissingToken(t) => format!("Missing token of '{:?}': '{}'", t, self.message),
+            ErrorKind::CannotParse(t) => format!("Cannot Parse token of '{:?}': '{}'", t, self.message),
+            _ => "".to_string()
+        }
+    }
+}
 struct Parser {
     tokens : Vec<Token>,
 
@@ -238,15 +277,17 @@ impl Parser {
     fn parse_statement(&mut self) -> Option<Statement> {
         match self.consume() {
             Token::If => {
-                let Ok(condition) = self.parse_expression("IF_START", 1) else {
-                    self.parse_error.push("error when parsing condition for if statement".to_string());
-                   return None
-                };
-                let Some(body) = self.parse_body() else {
-                    self.parse_error.push("error when parsing body for if statement".to_string());
-                    return None
-                };
-                Some(Statement::If {condition, body})
+                let condition = self.parse_expression("IF_START", 1);
+
+                if let Ok(condition) = condition {
+                    let Some(body) = self.parse_body() else {
+                        self.parse_error.push("error when parsing body for if statement".to_string());
+                        return None
+                    };
+                    return Some(Statement::If {condition, body})
+                }
+                println!("{}",condition.unwrap_err().summary());
+                None
             }
             Token::Let => {
                 let Ok(Expression::VariableAssignment {left, right}) = self.parse_expression("LET_START", 1) else {
@@ -257,6 +298,7 @@ impl Parser {
                 }
                 None
             }
+
             _ => None
         }
     }
@@ -270,11 +312,19 @@ impl Parser {
                     self.next().consume();
                     break
                 }
-                self.next();
-                let Some(result) = self.parse_statement() else {
-                    return None
-                };
-                statements.push(result);
+                if self.peek().is_keyword() {
+                    self.next();
+                    let Some(result) = self.parse_statement() else {
+                        return None
+                    };
+                    statements.push(result);
+                } else {
+                    let Ok(result) = self.parse_expression("parse_body", 1) else {
+                        return None
+                    };
+                    statements.push(Statement::Any {t: result});
+                }
+
                 if self.end() {
                     self.parse_error.push("Unexpected EOF while parsing body".to_string());
                     return None
@@ -286,7 +336,49 @@ impl Parser {
         None
     }
 
-    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Result<Expression, ()> {
+    fn parse_unclosed_until(&mut self, bp: u8, closed: Token, separator: Token, _debug: Option<&str>) -> Result<Vec<Expression>, ParseError> {
+        let mut list = Vec::<Expression>::new();
+        loop {
+            if self.end() {
+                return Err(ParseError::new(ErrorKind::EOFandUnclosed, None));
+            }
+            if *self.peek() == closed {
+                self.next().consume();
+                break
+            }
+            if list.len() > 0 && *self.peek() == separator {
+                self.next().consume();
+                if *self.peek() == closed {
+                    self.next().consume();
+                    break
+                }
+            } else if list.len() > 0 && *self.peek() != separator {
+                return Err(ParseError::new(ErrorKind::MissingToken(separator), None));
+            }
+            let result = self.parse_expression(_debug.unwrap_or("parse_unclosed"), bp);
+            if let Ok(result) = result {
+                list.push(result);
+            } else {
+                return Err(result.unwrap_err())
+            }
+        }
+        Ok(list)
+    }
+
+    fn parse_parenthesis(&mut self, _debug: Option<&str>) -> Result<Expression, ParseError> {
+        let result = self.parse_unclosed_until(2, Token::CloseParenthesis, Token::Comma, _debug);
+        if let Ok(mut result) = result {
+            if result.len() == 1 {
+                return Ok(Expression::Parenthesis(Box::new(result.pop().unwrap())));
+            }
+            return Ok(Expression::Tuple(result))
+        }
+        match result.unwrap_err().unwarp() {
+            (ErrorKind::EOFandUnclosed, _) => Err(ParseError::new(ErrorKind::MissingToken(Token::CloseParenthesis), Some("Unclosed '(' with Unexpectedly EOF.".to_string()))),
+            (T, A) => Err(ParseError::new(T, Some(A))),
+        }
+    }
+    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Result<Expression, ParseError> {
         let mut rawleft= self.parse_nud();
         loop {
             if let Ok(left) = rawleft {
@@ -300,224 +392,191 @@ impl Parser {
                     rawleft = self.parse_led(left, rbp);
                 } else { return  Ok(left); }
             } else {
-                return Err(())
+                return Err(rawleft.unwrap_err())
             }
         }
     }
-    fn parse_parenthesis_or_tuple(&mut self, _debug: Option<&str>) -> Result<Expression, ()> {
-        let mut list = Vec::<Expression>::new();
-        loop {
-            if self.end() {
-                self.parse_error.push("Unclosed 'OpenParenthesis' when reached EOF.".to_string());
-                return Err(());
-            }
-            if Token::CloseParenthesis == *self.peek() {
-                self.next().consume();
-                break
-            }
-            if list.len() > 0 && Token::Comma == *self.peek() {
-                self.next().consume();
-                if Token::CloseParenthesis == *self.peek() {
-                    self.next().consume();
-                    break
-                }
-            } else if list.len() > 0 && Token::Comma != *self.peek() {
-                self.parse_error.push("Expected Comma.".to_string());
-                return Err(());
-            }
-            let result = self.parse_expression(_debug.unwrap_or("parse_parenthesis_or_tuple"), 2);
-            if let Ok(result) = result {
-                list.push(result);
-            } else {
-                return Err(())
-            }
-        }
-        if list.len() == 1 {
-            return Ok(Expression::Parenthesis(Box::new(list.pop().unwrap())));
-        }
-        Ok(Expression::Tuple(list))
-    }
-    fn parse_nud(&mut self) -> Result<Expression, ()> {
+    fn parse_nud(&mut self) -> Result<Expression, ParseError> {
         match self.next().consume() {
             Token::LiteralStr(s) => Ok(Expression::LiteralStr(s)),
             Token::Identifier(s) => Ok(Expression::Identifier(s)),
             Token::Not => {
-                let Ok(result) = self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap()) else {
-                    self.parse_error.push("error while parsing Not Expression".to_string());
-                    return Err(());
-                };
-                Ok(Expression::Not(Box::new(result)))
+                let result = self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap());
+                if let Ok(result) = result {
+                    return Ok(Expression::Not(Box::new(result)))
+                }
+                Err(ParseError::new(ErrorKind::CannotParse(Token::Not), Some(result.unwrap_err().summary())))
             },
             Token::OpenParenthesis => {
-                let Ok(result) =self.parse_parenthesis_or_tuple(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis")) else {
-                    self.parse_error.push("error while parsing Parenthesis Expression".to_string());
-                    return Err(());
-                };
-                Ok(result)
+                let result =self.parse_parenthesis(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis"));
+                if let Ok(result) = result {
+                    return Ok(result)
+                }
+                Err(ParseError::new(ErrorKind::CannotParse(Token::OpenParenthesis), Some(result.unwrap_err().summary())))
             },
             Token::LiteralDigit(s) => {
                 let Ok(s) = s.parse::<i64>() else {
-                    return Err(());
+                    return Err(ParseError::new(ErrorKind::CannotParse(Token::LiteralDigit(s)), Some("Cannot parse to number".to_string())));
                 };
                 Ok(Expression::LiteralInt(s))
             },
-            _ => Err(()),
+            t => Err(ParseError::new(ErrorKind::CannotParse(t), Some("cannot parse token to expression".to_string()))),
         }
     }
 
-    fn parse_led(&mut self, left: Expression, rbp: u8) ->  Result<Expression, ()> {
+    fn parse_led(&mut self, left: Expression, rbp: u8) ->  Result<Expression, ParseError> {
          match self.next().consume() {
              Token::Assignment => {
-                 let Ok(result)=self.parse_expression(Token::Assignment.get_name(),rbp)else {
-                     self.parse_error.push("error while parsing Assignment Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::VariableAssignment {
-                    left: Box::new(left),
-                    right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Assignment.get_name(),rbp);
+                 if let Ok(result) = result {
+                    return Ok(Expression::VariableAssignment {
+                            left: Box::new(left),
+                            right: Box::new(result)
+                    })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::Add => {
-                 let Ok(result) =self.parse_expression(Token::Add.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing Add Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::Add {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Add.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::Add {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              },
              Token::Minus => {
-                 let Ok(result) =self.parse_expression(Token::Minus.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing Minus Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::Minus {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Minus.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::Minus {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::Multiply => {
-                 let Ok(result) =self.parse_expression(Token::Multiply.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing Multiply Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::Multiply {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Multiply.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::Multiply {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::Divide => {
-                 let Ok(result) =self.parse_expression(Token::Divide.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing Divide Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::Divide {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Divide.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::Divide {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              },
              Token::Equal => {
-                 let Ok(result) =self.parse_expression(Token::Equal.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing Equal Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::Equal {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Equal.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::Equal {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::NotEqual => {
-                 let Ok(result) =self.parse_expression(Token::NotEqual.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing NotEqual Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::NotEqual {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::NotEqual.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::NotEqual {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::GreaterOrEqual => {
-                 let Ok(result) =self.parse_expression(Token::GreaterOrEqual.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing GreaterOrEqual Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::GreaterOrEqual {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::GreaterOrEqual.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::GreaterOrEqual {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::LessOrEqual => {
-                 let Ok(result) =self.parse_expression(Token::LessOrEqual.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing LessOrEqual Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::LessOrEqual {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::LessOrEqual.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::LessOrEqual {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::GreaterThan => {
-                 let Ok(result) =self.parse_expression(Token::GreaterThan.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing GreaterThan Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::GreaterThan {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::GreaterThan.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::GreaterThan {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::LessThan => {
-                 let Ok(result) =self.parse_expression(Token::LessThan.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing LessThan Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::LessThan {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::LessThan.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::LessThan {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::And => {
-                 let Ok(result) =self.parse_expression(Token::And.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing And Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::And {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::And.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::And {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::Or => {
-                 let Ok(result) =self.parse_expression(Token::Or.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing Or Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::Or {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Or.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::Or {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::Dot => {
-                 let Ok(result) =self.parse_expression(Token::Dot.get_name(),rbp) else {
-                     self.parse_error.push("error while parsing MemberAccess Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::AccessMember {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_expression(Token::Dot.get_name(),rbp);
+                 if let Ok(result) = result {
+                     return Ok(Expression::AccessMember {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
              Token::OpenParenthesis => {
-                 let Ok(result) =self.parse_parenthesis_or_tuple(Some("membercall")) else {
-                     self.parse_error.push("error while parsing MemberCall Expression".to_string());
-                     return Err(());
-                 };
-                 Ok(Expression::MemberCall {
-                     left: Box::new(left),
-                     right: Box::new(result)
-                 })
+                 let result=self.parse_parenthesis(Some("membercall"));
+                 if let Ok(result) = result {
+                     return Ok(Expression::AccessMember {
+                         left: Box::new(left),
+                         right: Box::new(result)
+                     })
+                 }
+                 Err(result.unwrap_err())
              }
-             _ => {Err(())}
+             t => {Err(ParseError::new(ErrorKind::CannotParse(t), Some("Token isn't Expression that need right detonation".to_string())))}
         }
     }
 

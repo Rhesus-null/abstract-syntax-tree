@@ -1,7 +1,7 @@
 use crate::lexer::Lexer;
 
 mod lexer;
-pub mod i;
+pub mod static_analyzer;
 #[derive(Debug, Clone, PartialEq)] #[allow(unused)]
 enum Token{
     If,
@@ -115,14 +115,27 @@ impl Token {
 }
 
 fn main() {
-    let mut lexer = Lexer::new(b"if a + (3 3 4 5)").parse().unwrap();
+    let mut lexer = Lexer::new(b"if a + v && t >= f || c + { c + ( }").parse().unwrap();
     println!("{:#?}", lexer);
     let ast = Parser::new(lexer).to_ast();
     println!("{:#?}", ast)
 }
 
+#[derive(Debug)]
+enum ErrorKind {
+    EOF,
+    Unclosed,
+    EOFandUnclosed,
+    MissingToken(Token),
+    CannotParse,
+}
+
 #[derive(Debug)] #[allow(unused)]
 enum Expression {
+    ERROR {
+        e: ErrorKind,
+        origin: Token
+    },
     Identifier(String),
     LiteralStr(String),
     LiteralInt(i64),
@@ -194,6 +207,16 @@ enum Expression {
 }
 
 #[derive(Debug)]
+enum StatementErrorKind {
+    ExpectedExpression(&'static str),
+    ExpectDeclaration,
+    OtherErr(ErrorKind),
+    SelfErr {
+        e: Box<StatementErrorKind>, origin: Token, m_value: Option<Box<Vec<Statement>>>, s_value: Option<Box<Statement>>
+    }
+}
+
+#[derive(Debug)]
 enum Statement {
     If {
         condition: Expression,
@@ -203,40 +226,10 @@ enum Statement {
         identifier: String,
         value: Expression
     },
-    Any {t: Expression}
+    Any {t: Expression},
+    ERROR {e: StatementErrorKind, origin: Token, origin_value: Option<Expression>},
 }
 
-#[derive(Debug)]
-enum ErrorKind {
-    EOF,
-    Unclosed,
-    EOFandUnclosed,
-    MissingToken(Token),
-    CannotParse(Token)
-}
-
-struct ParseError {
-    kind: ErrorKind,
-    message: String
-}
-
-impl ParseError {
-    fn new(kind: ErrorKind, message: Option<String>) -> Self {
-        Self {kind, message: message.unwrap_or("".to_string())}
-    }
-    fn unwarp(self) -> (ErrorKind, String) {
-        (self.kind, self.message)
-    }
-
-    fn summary(self) -> String {
-        match self.kind {
-            ErrorKind::EOF => format!("End of File: '{}'", self.message),
-            ErrorKind::MissingToken(t) => format!("Missing token of '{:?}': '{}'", t, self.message),
-            ErrorKind::CannotParse(t) => format!("Cannot Parse token of '{:?}': '{}'", t, self.message),
-            _ => "".to_string()
-        }
-    }
-}
 struct Parser {
     tokens : Vec<Token>,
 
@@ -264,46 +257,38 @@ impl Parser {
     /// The main Parser
     fn parse(&mut self) -> Option<()> {
         while !self.end() {
-            if let Some(statement) = self.parse_statement() {
-                self.parse_result.push(statement);
-            } else {
-                return None;
-            }
+            let r = self.parse_statement();
+            self.parse_result.push(r);
             self.next();
         }
         Some(())
     }
 
-    fn parse_statement(&mut self) -> Option<Statement> {
+    fn parse_statement(&mut self) -> Statement {
         match self.consume() {
             Token::If => {
                 let condition = self.parse_expression("IF_START", 1);
-
-                if let Ok(condition) = condition {
-                    let Some(body) = self.parse_body() else {
-                        self.parse_error.push("error when parsing body for if statement".to_string());
-                        return None
-                    };
-                    return Some(Statement::If {condition, body})
-                }
-                println!("{}",condition.unwrap_err().summary());
-                None
+                let result = self.parse_body();
+                if let Ok(body) = result {
+                    return Statement::If {condition, body};
+                };
+                Statement::ERROR { e: result.unwrap_err(), origin: Token::If, origin_value: Some(condition) }
             }
             Token::Let => {
-                let Ok(Expression::VariableAssignment {left, right}) = self.parse_expression("LET_START", 1) else {
-                    return  None
+                let Expression::VariableAssignment {left, right}= self.parse_expression("LET_START", 1) else {
+                    return Statement::ERROR {e: StatementErrorKind::ExpectedExpression("VariableAssignment"), origin: Token::Let, origin_value: None};
                 };
                 if let Expression::Identifier(name) = *left {
-                    return Some(Statement::ImmutableVariableDeclaration {identifier: name, value: *right})
+                    return Statement::ImmutableVariableDeclaration {identifier: name, value: *right}
                 }
-                None
+                Statement::ERROR {e: StatementErrorKind::ExpectedExpression("Identifier"), origin: Token::Let, origin_value: None}
             }
 
-            _ => None
+            t => Statement::ERROR {e: StatementErrorKind::ExpectDeclaration, origin: t, origin_value: None},
         }
     }
 
-    fn parse_body(&mut self) -> Option<Vec<Statement>> {
+    fn parse_body(&mut self) -> Result<Vec<Statement>, StatementErrorKind> {
         if self.peek() == &Token::OpenBrace {
             let mut statements : Vec<Statement> = Vec::new();
             self.next().consume();
@@ -314,33 +299,26 @@ impl Parser {
                 }
                 if self.peek().is_keyword() {
                     self.next();
-                    let Some(result) = self.parse_statement() else {
-                        return None
-                    };
-                    statements.push(result);
+                    statements.push(self.parse_statement());
                 } else {
-                    let Ok(result) = self.parse_expression("parse_body", 1) else {
-                        return None
-                    };
-                    statements.push(Statement::Any {t: result});
+                    statements.push(Statement::Any {t:
+                    self.parse_expression("parse_body", 1)});
                 }
 
                 if self.end() {
-                    self.parse_error.push("Unexpected EOF while parsing body".to_string());
-                    return None
+                    return Err(StatementErrorKind::SelfErr{e: Box::new(StatementErrorKind::OtherErr(ErrorKind::EOFandUnclosed)), origin: Token::OpenBrace, m_value:Some(Box::new(statements)), s_value:None});
                 }
             }
-            return Some(statements)
+            return Ok(statements)
         }
-        self.parse_error.push("Expected OpenBrace and CloseBrace. Got EOF instead".to_string());
-        None
+        Err(StatementErrorKind::OtherErr(ErrorKind::MissingToken(Token::CloseBrace)))
     }
 
-    fn parse_unclosed_until(&mut self, bp: u8, closed: Token, separator: Token, _debug: Option<&str>) -> Result<Vec<Expression>, ParseError> {
+    fn parse_unclosed_until(&mut self, bp: u8, closed: Token, separator: Token, _debug: Option<&str>) -> Result<Vec<Expression>, ErrorKind> {
         let mut list = Vec::<Expression>::new();
         loop {
             if self.end() {
-                return Err(ParseError::new(ErrorKind::EOFandUnclosed, None));
+                return Err(ErrorKind::EOFandUnclosed)
             }
             if *self.peek() == closed {
                 self.next().consume();
@@ -353,230 +331,179 @@ impl Parser {
                     break
                 }
             } else if list.len() > 0 && *self.peek() != separator {
-                return Err(ParseError::new(ErrorKind::MissingToken(separator), None));
+                return Err(ErrorKind::MissingToken(separator))
             }
             let result = self.parse_expression(_debug.unwrap_or("parse_unclosed"), bp);
-            if let Ok(result) = result {
-                list.push(result);
-            } else {
-                return Err(result.unwrap_err())
-            }
+            list.push(result);
         }
         Ok(list)
+
     }
 
-    fn parse_parenthesis(&mut self, _debug: Option<&str>) -> Result<Expression, ParseError> {
+    fn parse_parenthesis(&mut self, _debug: Option<&str>) -> Expression {
         let result = self.parse_unclosed_until(2, Token::CloseParenthesis, Token::Comma, _debug);
         if let Ok(mut result) = result {
             if result.len() == 1 {
-                return Ok(Expression::Parenthesis(Box::new(result.pop().unwrap())));
+                return Expression::Parenthesis(Box::new(result.pop().unwrap()));
             }
-            return Ok(Expression::Tuple(result))
+            return Expression::Tuple(result)
         }
-        match result.unwrap_err().unwarp() {
-            (ErrorKind::EOFandUnclosed, _) => Err(ParseError::new(ErrorKind::MissingToken(Token::CloseParenthesis), Some("Unclosed '(' with Unexpectedly EOF.".to_string()))),
-            (T, A) => Err(ParseError::new(T, Some(A))),
-        }
+        Expression::ERROR {e: result.unwrap_err(), origin: Token::OpenParenthesis}
     }
-    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Result<Expression, ParseError> {
-        let mut rawleft= self.parse_nud();
+    fn parse_expression(&mut self, _debug: &str, bp: u8) -> Expression {
+        let mut left= self.parse_nud();
         loop {
-            if let Ok(left) = rawleft {
-                if self.end() {
-                    return Ok(left);
-                }
-                if let Some((lbp, rbp)) = self.peek().get_bp() {
-                    if lbp < bp {
-                        return  Ok(left);
-                    }
-                    rawleft = self.parse_led(left, rbp);
-                } else { return  Ok(left); }
-            } else {
-                return Err(rawleft.unwrap_err())
+            if self.end() {
+                break
             }
-        }
-    }
-    fn parse_nud(&mut self) -> Result<Expression, ParseError> {
-        match self.next().consume() {
-            Token::LiteralStr(s) => Ok(Expression::LiteralStr(s)),
-            Token::Identifier(s) => Ok(Expression::Identifier(s)),
-            Token::Not => {
-                let result = self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap());
-                if let Ok(result) = result {
-                    return Ok(Expression::Not(Box::new(result)))
+            if let Some((lbp, rbp)) = self.peek().get_bp() {
+                if lbp < bp {
+                    break
                 }
-                Err(ParseError::new(ErrorKind::CannotParse(Token::Not), Some(result.unwrap_err().summary())))
+                left = self.parse_led(left, rbp);
+            } else { break }
+        }
+        left
+    }
+    fn parse_nud(&mut self) -> Expression {
+        match self.next().consume() {
+            Token::LiteralStr(s) => Expression::LiteralStr(s),
+            Token::Identifier(s) => Expression::Identifier(s),
+            Token::Not => {
+                 self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap())
             },
             Token::OpenParenthesis => {
-                let result =self.parse_parenthesis(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis"));
-                if let Ok(result) = result {
-                    return Ok(result)
-                }
-                Err(ParseError::new(ErrorKind::CannotParse(Token::OpenParenthesis), Some(result.unwrap_err().summary())))
+                self.parse_parenthesis(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis"))
             },
-            Token::LiteralDigit(s) => {
-                let Ok(s) = s.parse::<i64>() else {
-                    return Err(ParseError::new(ErrorKind::CannotParse(Token::LiteralDigit(s)), Some("Cannot parse to number".to_string())));
+            Token::LiteralDigit(rs) => {
+                let Ok(s) = rs.parse::<i64>() else {
+                    return Expression::ERROR {e: ErrorKind::CannotParse, origin: Token::LiteralDigit(rs) }
                 };
-                Ok(Expression::LiteralInt(s))
+                Expression::LiteralInt(s)
             },
-            t => Err(ParseError::new(ErrorKind::CannotParse(t), Some("cannot parse token to expression".to_string()))),
+            t => {
+                if self.end() {
+                    return Expression::ERROR {e: ErrorKind::EOF, origin: Token::NONE}
+                };
+                Expression::ERROR {e: ErrorKind::CannotParse, origin: t}
+            },
         }
     }
 
-    fn parse_led(&mut self, left: Expression, rbp: u8) ->  Result<Expression, ParseError> {
+    fn parse_led(&mut self, left: Expression, rbp: u8) ->  Expression {
          match self.next().consume() {
              Token::Assignment => {
                  let result=self.parse_expression(Token::Assignment.get_name(),rbp);
-                 if let Ok(result) = result {
-                    return Ok(Expression::VariableAssignment {
-                            left: Box::new(left),
-                            right: Box::new(result)
-                    })
+                 Expression::VariableAssignment {
+                     left: Box::new(left),
+                     right: Box::new(result)
                  }
-                 Err(result.unwrap_err())
              }
              Token::Add => {
                  let result=self.parse_expression(Token::Add.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::Add {
-                         left: Box::new(left),
-                         right: Box::new(result)
-                     })
+                 Expression::Add {
+                     left: Box::new(left),
+                     right: Box::new(result)
                  }
-                 Err(result.unwrap_err())
              },
              Token::Minus => {
                  let result=self.parse_expression(Token::Minus.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::Minus {
+                 Expression::Minus {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::Multiply => {
                  let result=self.parse_expression(Token::Multiply.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::Multiply {
+                 Expression::Multiply {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::Divide => {
                  let result=self.parse_expression(Token::Divide.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::Divide {
+               Expression::Divide {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              },
              Token::Equal => {
                  let result=self.parse_expression(Token::Equal.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::Equal {
+                Expression::Equal {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::NotEqual => {
                  let result=self.parse_expression(Token::NotEqual.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::NotEqual {
+                Expression::NotEqual {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::GreaterOrEqual => {
                  let result=self.parse_expression(Token::GreaterOrEqual.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::GreaterOrEqual {
+              Expression::GreaterOrEqual {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
+
              }
              Token::LessOrEqual => {
                  let result=self.parse_expression(Token::LessOrEqual.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::LessOrEqual {
+                Expression::LessOrEqual {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::GreaterThan => {
                  let result=self.parse_expression(Token::GreaterThan.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::GreaterThan {
+                Expression::GreaterThan {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::LessThan => {
                  let result=self.parse_expression(Token::LessThan.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::LessThan {
+                 Expression::LessThan {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::And => {
                  let result=self.parse_expression(Token::And.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::And {
+                 Expression::And {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::Or => {
                  let result=self.parse_expression(Token::Or.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::Or {
+                 Expression::Or {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::Dot => {
                  let result=self.parse_expression(Token::Dot.get_name(),rbp);
-                 if let Ok(result) = result {
-                     return Ok(Expression::AccessMember {
+                 Expression::AccessMember {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
              Token::OpenParenthesis => {
                  let result=self.parse_parenthesis(Some("membercall"));
-                 if let Ok(result) = result {
-                     return Ok(Expression::AccessMember {
+                 Expression::AccessMember {
                          left: Box::new(left),
                          right: Box::new(result)
-                     })
-                 }
-                 Err(result.unwrap_err())
+                     }
              }
-             t => {Err(ParseError::new(ErrorKind::CannotParse(t), Some("Token isn't Expression that need right detonation".to_string())))}
+             t => {
+                 if self.end() {
+                     return Expression::ERROR {e: ErrorKind::EOF, origin: Token::NONE}
+                 }
+                 Expression::ERROR {e: ErrorKind::CannotParse, origin: t}
+             }
         }
     }
 

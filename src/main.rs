@@ -1,9 +1,10 @@
 use crate::lexer::Lexer;
+use crate::static_analyzer::StaticAnalyzer;
 
 mod lexer;
 pub mod static_analyzer;
 #[derive(Debug, Clone, PartialEq)] #[allow(unused)]
-enum Token{
+pub enum Token{
     If,
     Let,
     Not,
@@ -115,25 +116,25 @@ impl Token {
 }
 
 fn main() {
-    let mut lexer = Lexer::new(b"if a + v && t >= f || c + { c + ( }").parse().unwrap();
+    let mut lexer = Lexer::new(b"if !(a >= f) { }").parse().unwrap();
     println!("{:#?}", lexer);
-    let ast = Parser::new(lexer).to_ast();
-    println!("{:#?}", ast)
+    let ast = Parser::new(lexer).parse();
+    println!("{:#?}", ast);
+    let analyzer_result = StaticAnalyzer::new(ast);
+    println!("{:#?}", analyzer_result);
 }
 
 #[derive(Debug)]
-enum ErrorKind {
+pub enum ErrorKind {
     EOF,
-    Unclosed,
-    EOFandUnclosed,
     MissingToken(Token),
     CannotParse,
 }
 
 #[derive(Debug)] #[allow(unused)]
-enum Expression {
+pub enum Expression {
     ERROR {
-        e: ErrorKind,
+        error: ErrorKind,
         origin: Token
     },
     Identifier(String),
@@ -207,17 +208,14 @@ enum Expression {
 }
 
 #[derive(Debug)]
-enum StatementErrorKind {
+pub enum StatementErrorKind {
     ExpectedExpression(&'static str),
     ExpectDeclaration,
     OtherErr(ErrorKind),
-    SelfErr {
-        e: Box<StatementErrorKind>, origin: Token, m_value: Option<Box<Vec<Statement>>>, s_value: Option<Box<Statement>>
-    }
 }
 
 #[derive(Debug)]
-enum Statement {
+pub enum Statement {
     If {
         condition: Expression,
         body: Vec<Statement>
@@ -227,41 +225,30 @@ enum Statement {
         value: Expression
     },
     Any {t: Expression},
-    ERROR {e: StatementErrorKind, origin: Token, origin_value: Option<Expression>},
+    ERROR { error: StatementErrorKind, origin: Token, origin_value: Option<Expression>},
 }
 
 struct Parser {
     tokens : Vec<Token>,
 
     parse_result: Vec<Statement>,
-    parse_error: Vec<String>,
     position : usize,
 }
 
 impl Parser {
     pub fn new(tokens : Vec<Token>) -> Self {
-        Self { tokens, parse_error: Vec::new(), parse_result: Vec::new(), position: 0}
-    }
-
-    /// turn the containing Token to ast
-    pub fn to_ast(mut self) -> Result<Vec<Statement>, Vec<String>> {
-        let result = self.parse();
-        if result.is_some() {
-            Ok(self.parse_result)
-        } else {
-            Err(self.parse_error)
-        }
+        Self { tokens, parse_result: Vec::new(), position: 0}
     }
 
 
     /// The main Parser
-    fn parse(&mut self) -> Option<()> {
+    fn parse(mut self) -> Vec<Statement> {
         while !self.end() {
             let r = self.parse_statement();
             self.parse_result.push(r);
             self.next();
         }
-        Some(())
+        self.parse_result
     }
 
     fn parse_statement(&mut self) -> Statement {
@@ -272,23 +259,23 @@ impl Parser {
                 if let Ok(body) = result {
                     return Statement::If {condition, body};
                 };
-                Statement::ERROR { e: result.unwrap_err(), origin: Token::If, origin_value: Some(condition) }
+                Statement::ERROR { error: StatementErrorKind::OtherErr(result.unwrap_err()), origin: Token::If, origin_value: Some(condition) }
             }
             Token::Let => {
                 let Expression::VariableAssignment {left, right}= self.parse_expression("LET_START", 1) else {
-                    return Statement::ERROR {e: StatementErrorKind::ExpectedExpression("VariableAssignment"), origin: Token::Let, origin_value: None};
+                    return Statement::ERROR { error: StatementErrorKind::ExpectedExpression("VariableAssignment"), origin: Token::Let, origin_value: None};
                 };
                 if let Expression::Identifier(name) = *left {
                     return Statement::ImmutableVariableDeclaration {identifier: name, value: *right}
                 }
-                Statement::ERROR {e: StatementErrorKind::ExpectedExpression("Identifier"), origin: Token::Let, origin_value: None}
+                Statement::ERROR { error: StatementErrorKind::ExpectedExpression("Identifier"), origin: Token::Let, origin_value: None}
             }
 
-            t => Statement::ERROR {e: StatementErrorKind::ExpectDeclaration, origin: t, origin_value: None},
+            t => Statement::ERROR { error: StatementErrorKind::ExpectDeclaration, origin: t, origin_value: None},
         }
     }
 
-    fn parse_body(&mut self) -> Result<Vec<Statement>, StatementErrorKind> {
+    fn parse_body(&mut self) -> Result<Vec<Statement>, ErrorKind> {
         if self.peek() == &Token::OpenBrace {
             let mut statements : Vec<Statement> = Vec::new();
             self.next().consume();
@@ -306,19 +293,19 @@ impl Parser {
                 }
 
                 if self.end() {
-                    return Err(StatementErrorKind::SelfErr{e: Box::new(StatementErrorKind::OtherErr(ErrorKind::EOFandUnclosed)), origin: Token::OpenBrace, m_value:Some(Box::new(statements)), s_value:None});
+                    return Err(ErrorKind::MissingToken(Token::CloseBrace));
                 }
             }
             return Ok(statements)
         }
-        Err(StatementErrorKind::OtherErr(ErrorKind::MissingToken(Token::CloseBrace)))
+        Err(ErrorKind::MissingToken(Token::CloseBrace))
     }
 
     fn parse_unclosed_until(&mut self, bp: u8, closed: Token, separator: Token, _debug: Option<&str>) -> Result<Vec<Expression>, ErrorKind> {
         let mut list = Vec::<Expression>::new();
         loop {
             if self.end() {
-                return Err(ErrorKind::EOFandUnclosed)
+                return Err(ErrorKind::MissingToken(closed));
             }
             if *self.peek() == closed {
                 self.next().consume();
@@ -348,7 +335,7 @@ impl Parser {
             }
             return Expression::Tuple(result)
         }
-        Expression::ERROR {e: result.unwrap_err(), origin: Token::OpenParenthesis}
+        Expression::ERROR { error: result.unwrap_err(), origin: Token::OpenParenthesis}
     }
     fn parse_expression(&mut self, _debug: &str, bp: u8) -> Expression {
         let mut left= self.parse_nud();
@@ -377,15 +364,15 @@ impl Parser {
             },
             Token::LiteralDigit(rs) => {
                 let Ok(s) = rs.parse::<i64>() else {
-                    return Expression::ERROR {e: ErrorKind::CannotParse, origin: Token::LiteralDigit(rs) }
+                    return Expression::ERROR { error: ErrorKind::CannotParse, origin: Token::LiteralDigit(rs) }
                 };
                 Expression::LiteralInt(s)
             },
             t => {
                 if self.end() {
-                    return Expression::ERROR {e: ErrorKind::EOF, origin: Token::NONE}
+                    return Expression::ERROR { error: ErrorKind::EOF, origin: Token::NONE}
                 };
-                Expression::ERROR {e: ErrorKind::CannotParse, origin: t}
+                Expression::ERROR { error: ErrorKind::CannotParse, origin: t}
             },
         }
     }
@@ -500,9 +487,9 @@ impl Parser {
              }
              t => {
                  if self.end() {
-                     return Expression::ERROR {e: ErrorKind::EOF, origin: Token::NONE}
+                     return Expression::ERROR { error: ErrorKind::EOF, origin: Token::NONE}
                  }
-                 Expression::ERROR {e: ErrorKind::CannotParse, origin: t}
+                 Expression::ERROR { error: ErrorKind::CannotParse, origin: t}
              }
         }
     }

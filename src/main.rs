@@ -1,17 +1,17 @@
-use crate::lexer::Lexer;
+use crate::lexer::{Lexer, MToken, TokenMetadata};
 use crate::static_analyzer::StaticAnalyzer;
 
 mod lexer;
 pub mod static_analyzer;
-#[derive(Debug, Clone, PartialEq)] #[allow(unused)]
+#[derive(Debug, Copy, Clone,PartialEq)] #[allow(unused)]
 pub enum Token{
     If,
     Let,
     Not,
-    Identifier(String),
+    Identifier,
     Assignment,
-    LiteralStr(String),
-    LiteralDigit(String),
+    LiteralStr,
+    LiteralDigit,
     Add,
     Minus,
     Multiply,
@@ -85,10 +85,10 @@ impl Token {
     // Debug ONLY
     pub fn get_name(&self) -> &str {
         match self {
-            Token::Identifier(name) => "Identifier",
+            Token::Identifier => "Identifier",
             Token::Assignment => "Assignment",
-            Token::LiteralStr(name) => "LiteralStr",
-            Token::LiteralDigit(name) => "LiteralInt",
+            Token::LiteralStr=> "LiteralStr",
+            Token::LiteralDigit => "LiteralInt",
             Token::Add => "Add",
             Token::Minus => "Minus",
             Token::Multiply => "Multiply",
@@ -116,12 +116,12 @@ impl Token {
 }
 
 fn main() {
-    let mut lexer = Lexer::new(b"if !(a >= f) { }").parse().unwrap();
-    println!("{:#?}", lexer);
+    let mut lexer = Lexer::new(b"if !a {}").parse().unwrap();
+    println!("v: {:#?}", lexer);
     let ast = Parser::new(lexer).parse();
-    println!("{:#?}", ast);
+    println!("r: {:#?}", ast);
     let analyzer_result = StaticAnalyzer::new(ast);
-    println!("{:#?}", analyzer_result);
+    println!("s: {:#?}", analyzer_result);
 }
 
 #[derive(Debug)]
@@ -229,14 +229,14 @@ pub enum Statement {
 }
 
 struct Parser {
-    tokens : Vec<Token>,
+    tokens : Vec<MToken>,
 
     parse_result: Vec<Statement>,
     position : usize,
 }
 
 impl Parser {
-    pub fn new(tokens : Vec<Token>) -> Self {
+    pub fn new(tokens : Vec<MToken>) -> Self {
         Self { tokens, parse_result: Vec::new(), position: 0}
     }
 
@@ -252,7 +252,7 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Statement {
-        match self.consume() {
+        match self.consume().0 {
             Token::If => {
                 let condition = self.parse_expression("IF_START", 1);
                 let result = self.parse_body();
@@ -354,31 +354,34 @@ impl Parser {
     }
     fn parse_nud(&mut self) -> Expression {
         match self.next().consume() {
-            Token::LiteralStr(s) => Expression::LiteralStr(s),
-            Token::Identifier(s) => Expression::Identifier(s),
-            Token::Not => {
-                 self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap())
+            (Token::LiteralStr, v) => {
+                let value = v.unwrap();
+                Expression::LiteralStr(value)
+            }
+            (Token::Identifier, v) => {
+                let value = v.unwrap();
+                Expression::Identifier(value)
+            }
+            (Token::Not, _) => {
+                 Expression::Not(Box::new(self.parse_expression(Token::Not.get_name(),Token::Not.get_single_bp().unwrap())))
             },
-            Token::OpenParenthesis => {
+            (Token::OpenParenthesis, _) => {
                 self.parse_parenthesis(Some("parse_nud.parse_parenthesis_or_tuple.OpenParenthesis"))
             },
-            Token::LiteralDigit(rs) => {
-                let Ok(s) = rs.parse::<i64>() else {
-                    return Expression::ERROR { error: ErrorKind::CannotParse, origin: Token::LiteralDigit(rs) }
+            (Token::LiteralDigit, v) => {
+                let Ok(s) = v.unwrap().parse::<i64>() else {
+                    return Expression::ERROR { error: ErrorKind::CannotParse, origin: Token::LiteralDigit }
                 };
                 Expression::LiteralInt(s)
             },
-            t => {
-                if self.end() {
-                    return Expression::ERROR { error: ErrorKind::EOF, origin: Token::NONE}
-                };
-                Expression::ERROR { error: ErrorKind::CannotParse, origin: t}
+            _ => {
+                Expression::ERROR { error: ErrorKind::CannotParse, origin: Token::NONE}
             },
         }
     }
 
     fn parse_led(&mut self, left: Expression, rbp: u8) ->  Expression {
-         match self.next().consume() {
+         match self.next().consume().0 {
              Token::Assignment => {
                  let result=self.parse_expression(Token::Assignment.get_name(),rbp);
                  Expression::VariableAssignment {
@@ -486,10 +489,7 @@ impl Parser {
                      }
              }
              t => {
-                 if self.end() {
-                     return Expression::ERROR { error: ErrorKind::EOF, origin: Token::NONE}
-                 }
-                 Expression::ERROR { error: ErrorKind::CannotParse, origin: t}
+                 Expression::ERROR { error: ErrorKind::CannotParse, origin: Token::NONE}
              }
         }
     }
@@ -505,9 +505,10 @@ impl Parser {
         self
     }
 
-    /// consume the current item, replacing [Token::NONE] in its place
-    fn consume(&mut self) -> Token {
-        std::mem::replace(&mut self.tokens[self.position], Token::NONE)
+    fn consume(&mut self) -> (Token, Option<String>) {
+        let (t, m, v) = std::mem::replace(&mut self.tokens[self.position], MToken::new(Token::NONE, TokenMetadata {span: (0,0), line: 0}, None)).deconstruct();
+        let _ = std::mem::replace(&mut self.tokens[self.position], MToken::new(t, m, None));
+        (t, v)
     }
 
     /// peek next.

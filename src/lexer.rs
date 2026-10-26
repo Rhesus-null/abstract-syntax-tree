@@ -1,7 +1,48 @@
+use std::ops::{Deref, DerefMut};
 use crate::Token;
 
+
+#[derive(Debug)]
+pub struct TokenMetadata {
+    pub(crate) span: (usize, usize),
+    pub(crate) line: usize,
+}
+
+#[derive(Debug)]
+pub struct MToken {
+    token: Token,
+    value: Option<String>,
+    metadata: TokenMetadata,
+}
+
+impl MToken {
+    pub fn new(token: Token, metadata: TokenMetadata, value: Option<String>) -> Self {
+        Self {token, value, metadata}
+    }
+    
+    pub fn deconstruct(self) -> (Token, TokenMetadata, Option<String>) {
+        (self.token, self.metadata, self.value)
+    }
+    
+    pub fn get_metadata(self) -> TokenMetadata {
+        self.metadata
+    }
+    
+    pub fn get_value(self) -> Option<String> {
+        self.value
+    }
+}
+impl Deref for MToken {
+    type Target = Token;
+
+    fn deref(&self) -> &Self::Target {
+        &self.token
+    }
+}
+
+
 pub struct Lexer<'a> {
-    tokens: Vec<Token>,
+    tokens: Vec<MToken>,
     raw: &'a[u8],
 
     parse_error: Vec<&'a str>,
@@ -14,7 +55,7 @@ impl<'a> Lexer<'a> {
         Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: 0, is_end: false}
     }
 
-    pub fn parse(mut self) -> Result<Vec<Token>, Vec<&'a str>> {
+    pub fn parse(mut self) -> Result<Vec<MToken>, Vec<&'a str>> {
         while !self.end()  {
             if self.get().is_ascii_whitespace() {
                 self.next();
@@ -24,8 +65,8 @@ impl<'a> Lexer<'a> {
                 t if t.is_ascii_alphabetic() => self.parse_identifier_or_keyword(),
                 t if t.is_ascii_digit() => self.parse_digit(),
                 t if *t == b'"' => self.parse_str(),
-                t if t.is_ascii_punctuation() =>  self.parse_punctuation(),
-                _ => Token::NONE /*TODO: Add error*/
+                t if t.is_ascii_punctuation() =>  MToken::new(self.parse_punctuation(), TokenMetadata {span: (0, 0), line: 0}, None),
+                _ => MToken::new(Token::NONE, TokenMetadata {span: (0, 0), line: 0}, None) /*TODO: Add error*/
             };
             self.tokens.push(result);
         }
@@ -37,58 +78,54 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn cast_keyword(&mut self, string: &str) -> Option<Token> {
+    fn cast_keyword(&mut self, string: &[u8]) -> Option<MToken> {
         match string {
-            "if" => Some(Token::If),
-            "let" => Some(Token::Let),
+            b"if" => Some(MToken::new(Token::If, TokenMetadata {span: (0, 0), line: 0}, None)),
+            b"let" => Some(MToken::new(Token::Let, TokenMetadata {span: (0, 0), line: 0}, None)),
             _ => None
         }
     }
-    fn parse_identifier_or_keyword(&mut self) -> Token {
-        let mut buffer = Vec::new();
+    fn parse_identifier_or_keyword(&mut self) -> MToken {
+        let mut str_b = Vec::new();
         loop {
             if !self.get().is_ascii_whitespace() && (self.get().is_ascii_alphanumeric() || *self.get() == b'_') {
-                let c = *self.get();
-                buffer.push(c);
-            } else {
-                return self.cast_keyword(unsafe { str::from_utf8_unchecked(&*buffer) }).unwrap_or(Token::Identifier(unsafe { String::from_utf8_unchecked(buffer) }))
-            }
+                str_b.push(*self.get());
+            } else { break }
 
-            if self.raw_end() {
-                return self.cast_keyword(unsafe { str::from_utf8_unchecked(&*buffer) }).unwrap_or(Token::Identifier(unsafe { String::from_utf8_unchecked(buffer) }))
-            }
+            if self.raw_end() {break}
             self.next();
         }
+        self.cast_keyword(&str_b)
+            .unwrap_or(MToken::new(Token::Identifier, TokenMetadata {span: (0, 0), line: 0}, Some(unsafe {String::from_utf8_unchecked(str_b)})))
     }
-    fn parse_digit(&mut self) -> Token {
-        let mut buffer = Vec::new();
+    fn parse_digit(&mut self) -> MToken{
+        let mut str_b = Vec::new();
         loop {
             if !self.get().is_ascii_whitespace() && self.get().is_ascii_digit() {
-                let c = *self.get();
-                buffer.push(c);
-            } else {
-                return Token::LiteralDigit(unsafe { String::from_utf8_unchecked(buffer) })
-            }
-            if self.raw_end() {
-                return Token::LiteralDigit(unsafe { String::from_utf8_unchecked(buffer) })
-            }
+                str_b.push(*self.get());
+            } else { break }
+            if self.raw_end() { break }
             self.next();
         }
+        
+        MToken::new(Token::LiteralDigit, TokenMetadata {span: (0, 0), line: 0}, Some(unsafe {String::from_utf8_unchecked(str_b)}))
     }
 
-    fn parse_str(&mut self) -> Token {
-        let mut buffer = Vec::new();
+    fn parse_str(&mut self) -> MToken {
+
+        let mut str_b = Vec::new();
         let mut c = *self.next().get();
         loop {
             if self.end() {
-                return Token::NONE /*TODO: Add error*/
+                return MToken::new(Token::NONE, TokenMetadata {span: (0, 0), line: 0}, None) /*TODO: Add error*/
             }
 
             if c == b'"' { self.next(); break; }
-            buffer.push(c);
+            str_b.push(c);
             c = *self.next().get();
         }
-        Token::LiteralStr(unsafe { String::from_utf8_unchecked(buffer) } /*TODO: This may cause safety problem*/)
+
+        MToken::new(Token::LiteralStr, TokenMetadata {span: (0, 0), line: 0}, Some(unsafe {String::from_utf8_unchecked(str_b)}))
     }
 
     fn parse_punctuation(&mut self) -> Token {

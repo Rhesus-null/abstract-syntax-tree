@@ -6,8 +6,8 @@ use crate::TokenKind;
 
 #[derive(Debug, Copy, Clone)]
 pub struct TokenMetadata {
-    pub(crate) span: (usize, usize),
-    pub(crate) line: usize,
+    pub span: (usize, usize),
+    pub line: usize,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -21,15 +21,12 @@ impl<'a> Token<'a> {
     pub fn new(token: TokenKind, metadata: TokenMetadata, value: &'a [u8]) -> Self {
         Self {token, value, metadata}
     }
-
     pub fn get_token_kind(&self) -> TokenKind {
         self.token
     }
-
     pub fn get_metadata(&self) -> TokenMetadata {
         self.metadata
     }
-    
     pub fn get_value(&self) -> &[u8] {
         self.value
     }
@@ -39,13 +36,16 @@ struct RSpan {
     start: usize,
     end: Rc<Cell<usize>>,
 }
-
 impl RSpan {
     fn new(start: usize, end: Rc<Cell<usize>>) -> Self {
         Self { start, end }
     }
     fn as_range(&self) -> Range<usize> {
+        if self.start == self.end.get() {
+            return self.start..(self.end.get() + 1)
+        }
         self.start..self.end.get()
+
     }
     fn as_range_inclusive(&self) -> RangeInclusive<usize> {
         self.start..=self.end.get()
@@ -62,16 +62,19 @@ pub struct Lexer<'a> {
 
     parse_error: Vec<&'a str>,
     position: Rc<Cell<usize>>,
+    line: usize,
+
     is_end: bool,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: Rc::new(Cell::new(0)), is_end: false}
+        Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: Rc::new(Cell::new(0)), line: 1, is_end: false}
     }
 
     pub fn parse(mut self) -> Result<Vec<Token<'a>>, Vec<&'a str>> {
         while !self.end()  {
+            if *self.get() == b'\n' { self.line += 1; }
             if self.get().is_ascii_whitespace() {
                 self.next();
                 continue;
@@ -95,30 +98,30 @@ impl<'a> Lexer<'a> {
     fn parse_identifier_or_keyword(&mut self) -> Token<'a> {
         let r_span = self.record_span();
         loop {
-            if !self.get().is_ascii_whitespace() && (!self.get().is_ascii_alphanumeric() || !*self.get() == b'_') {
+            if !self.get().is_ascii_alphanumeric() || !*self.get() == b'_' {
                 break
             }
-            if self.raw_end() {break}
+            if self.raw_end() || self.get().is_ascii_whitespace() {break}
             self.next();
         }
         let result = &self.raw[r_span.as_range()];
         match result {
-            b"if" => Token::new(TokenKind::If, TokenMetadata {span: r_span.as_raw(), line: 0}, result),
-            b"let" => Token::new(TokenKind::Let, TokenMetadata {span: r_span.as_raw(), line: 0}, result),
-            _ => Token::new(TokenKind::Identifier, TokenMetadata {span: r_span.as_raw(), line: 0}, result),
+            b"if" => Token::new(TokenKind::If, TokenMetadata {span: r_span.as_raw(), line: self.line}, result),
+            b"let" => Token::new(TokenKind::Let, TokenMetadata {span: r_span.as_raw(), line: self.line}, result),
+            _ => Token::new(TokenKind::Identifier, TokenMetadata {span: r_span.as_raw(), line: self.line}, result),
         }
     }
     fn parse_digit(&mut self) -> Token<'a> {
         let r_span = self.record_span();
         loop {
-            if !self.get().is_ascii_whitespace() && !self.get().is_ascii_digit() {
+            if  !self.get().is_ascii_digit() {
                 break
             }
-            if self.raw_end() { break }
+            if self.raw_end() || self.get().is_ascii_whitespace() { break }
             self.next();
         }
         let result = &self.raw[r_span.as_range()];
-        Token::new(TokenKind::LiteralDigit, TokenMetadata {span: r_span.as_raw(), line: 0}, result)
+        Token::new(TokenKind::LiteralDigit, TokenMetadata {span: r_span.as_raw(), line: self.line}, result)
     }
 
     fn parse_str(&mut self) -> Token<'a> {
@@ -134,7 +137,7 @@ impl<'a> Lexer<'a> {
         }
 
         let result = &self.raw[r_span.as_range()];
-        Token::new(TokenKind::LiteralStr, TokenMetadata {span: (0, 0), line: 0}, result)
+        Token::new(TokenKind::LiteralStr, TokenMetadata {span: r_span.as_raw(), line: self.line}, result)
     }
 
     fn parse_punctuation(&mut self) -> Token<'a> {
@@ -193,7 +196,7 @@ impl<'a> Lexer<'a> {
             _ => { self.next(); TokenKind::NONE /*TODO: Add error*/  }
         };
         let result = &self.raw[r_span.as_range()];
-        Token::new(kind, TokenMetadata {span: r_span.as_raw(), line: 0}, result)
+        Token::new(kind, TokenMetadata {span: r_span.as_raw(), line: self.line}, result)
     }
 
     fn record_span(&self) -> RSpan {
@@ -201,14 +204,14 @@ impl<'a> Lexer<'a> {
     }
 
     fn raw_end(&self) -> bool {
-        self.position.get()+ 1 == self.raw.len()
+        self.position.get() + 1 == self.raw.len()
     }
     fn end(&mut self) -> bool {
         let end = self.is_end;
-        self.is_end = self.position.get() == self.raw.len();
+        self.is_end = self.position.get() + 1 == self.raw.len();
         end
     }
-    fn next(& self) -> & Self {
+    fn next(&self) -> & Self {
         if self.position.get() + 1 < self.raw.len() {
             self.position.set(self.position.get() + 1);
         }

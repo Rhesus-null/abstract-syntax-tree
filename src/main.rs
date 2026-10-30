@@ -116,12 +116,13 @@ impl TokenKind {
 }
 
 fn main() {
-    let mut lexer = Lexer::new(b"if !mynameisjeff {}").parse().unwrap();
+    // println!("{:?}", str::from_utf8(&[109, 121, 110, 97, 109, 101, 105, 115, 106, 101, 102, 102]))
+    let mut lexer = Lexer::new(b"if !mynameisjeff {} \n\n if youmama && yofather {}").parse().unwrap();
     println!("v: {:#?}", lexer);
-    let ast = Parser::new(lexer).parse();
-    println!("r: {:#?}", ast);
-    let analyzer_result = StaticAnalyzer::new(ast);
-    println!("s: {:#?}", analyzer_result);
+    // let ast = Parser::new(lexer).parse();
+    // println!("r: {:#?}", ast);
+    // let analyzer_result = StaticAnalyzer::new(ast);
+    // println!("s: {:#?}", analyzer_result);
 }
 
 #[derive(Debug)]

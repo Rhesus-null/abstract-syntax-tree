@@ -1,4 +1,4 @@
-use crate::{ErrorKind, Expression, Statement, StatementErrorKind, Token};
+use crate::{ErrorKind, Expression, Statement, StatementErrorKind, TokenKind};
 
 
 pub enum MustBe {
@@ -26,17 +26,17 @@ impl StaticAnalyzer
         match stmt {
             Statement::ERROR {error, origin, origin_value } => {
                 match (error, origin, origin_value) {
-                    (StatementErrorKind::OtherErr(T), Token::If, Any) => {
+                    (StatementErrorKind::OtherErr(T), TokenKind::If, Any) => {
                         match (T, Any) {
                             (T, Some(f)) => {
                                 let result = Self::evaluate_expression(f, MustBe::Condition);
                                 if result.is_some() {
                                     return result;
                                 }
-                                Self::evaluate(Statement::ERROR {error: StatementErrorKind::OtherErr(T), origin: Token::If, origin_value: None})
+                                Self::evaluate(Statement::ERROR {error: StatementErrorKind::OtherErr(T), origin: TokenKind::If, origin_value: None})
                             },
                             (ErrorKind::MissingToken(T), _) => match T {
-                                Token::CloseBrace => Some("If Statement missing '}', believe it or not you may want to add '}' after the '{'".to_string()),
+                                TokenKind::CloseBrace => Some("If Statement missing '}', believe it or not you may want to add '}' after the '{'".to_string()),
                                 T => Some(format!("If Statement Missing Token '{}'", T.get_name())),
                             }
                             _ => None,

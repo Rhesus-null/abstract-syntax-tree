@@ -1,61 +1,76 @@
-use std::ops::{Deref, DerefMut};
-use crate::Token;
+use std::cell::Cell;
+use std::ops::{Range, RangeInclusive};
+use std::rc::Rc;
+use crate::TokenKind;
 
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct TokenMetadata {
     pub(crate) span: (usize, usize),
     pub(crate) line: usize,
 }
 
-#[derive(Debug)]
-pub struct MToken {
-    token: Token,
-    value: Option<String>,
+#[derive(Debug, Copy, Clone)]
+pub struct Token<'a> {
+    token: TokenKind,
+    value: &'a [u8],
     metadata: TokenMetadata,
 }
 
-impl MToken {
-    pub fn new(token: Token, metadata: TokenMetadata, value: Option<String>) -> Self {
+impl<'a> Token<'a> {
+    pub fn new(token: TokenKind, metadata: TokenMetadata, value: &'a [u8]) -> Self {
         Self {token, value, metadata}
     }
-    
-    pub fn deconstruct(self) -> (Token, TokenMetadata, Option<String>) {
-        (self.token, self.metadata, self.value)
+
+    pub fn get_token_kind(&self) -> TokenKind {
+        self.token
     }
-    
-    pub fn get_metadata(self) -> TokenMetadata {
+
+    pub fn get_metadata(&self) -> TokenMetadata {
         self.metadata
     }
     
-    pub fn get_value(self) -> Option<String> {
+    pub fn get_value(&self) -> &[u8] {
         self.value
     }
 }
-impl Deref for MToken {
-    type Target = Token;
 
-    fn deref(&self) -> &Self::Target {
-        &self.token
+struct RSpan {
+    start: usize,
+    end: Rc<Cell<usize>>,
+}
+
+impl RSpan {
+    fn new(start: usize, end: Rc<Cell<usize>>) -> Self {
+        Self { start, end }
+    }
+    fn as_range(&self) -> Range<usize> {
+        self.start..self.end.get()
+    }
+    fn as_range_inclusive(&self) -> RangeInclusive<usize> {
+        self.start..=self.end.get()
+    }
+    fn as_raw(&self) -> (usize, usize) {
+        (self.start, self.end.get())
     }
 }
 
 
 pub struct Lexer<'a> {
-    tokens: Vec<MToken>,
+    tokens: Vec<Token<'a>>,
     raw: &'a[u8],
 
     parse_error: Vec<&'a str>,
-    position: usize,
+    position: Rc<Cell<usize>>,
     is_end: bool,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: 0, is_end: false}
+        Self {tokens: Vec::new(), raw: bytes, parse_error: Vec::new(), position: Rc::new(Cell::new(0)), is_end: false}
     }
 
-    pub fn parse(mut self) -> Result<Vec<MToken>, Vec<&'a str>> {
+    pub fn parse(mut self) -> Result<Vec<Token<'a>>, Vec<&'a str>> {
         while !self.end()  {
             if self.get().is_ascii_whitespace() {
                 self.next();
@@ -65,8 +80,8 @@ impl<'a> Lexer<'a> {
                 t if t.is_ascii_alphabetic() => self.parse_identifier_or_keyword(),
                 t if t.is_ascii_digit() => self.parse_digit(),
                 t if *t == b'"' => self.parse_str(),
-                t if t.is_ascii_punctuation() =>  MToken::new(self.parse_punctuation(), TokenMetadata {span: (0, 0), line: 0}, None),
-                _ => MToken::new(Token::NONE, TokenMetadata {span: (0, 0), line: 0}, None) /*TODO: Add error*/
+                t if t.is_ascii_punctuation() =>  self.parse_punctuation(),
+                _ => Token::new(TokenKind::NONE, TokenMetadata {span: (0, 0), line: 0}, b"") /*TODO: Add error*/
             };
             self.tokens.push(result);
         }
@@ -77,135 +92,136 @@ impl<'a> Lexer<'a> {
             Err(self.parse_error)
         }
     }
-
-    fn cast_keyword(&mut self, string: &[u8]) -> Option<MToken> {
-        match string {
-            b"if" => Some(MToken::new(Token::If, TokenMetadata {span: (0, 0), line: 0}, None)),
-            b"let" => Some(MToken::new(Token::Let, TokenMetadata {span: (0, 0), line: 0}, None)),
-            _ => None
-        }
-    }
-    fn parse_identifier_or_keyword(&mut self) -> MToken {
-        let mut str_b = Vec::new();
+    fn parse_identifier_or_keyword(&mut self) -> Token<'a> {
+        let r_span = self.record_span();
         loop {
-            if !self.get().is_ascii_whitespace() && (self.get().is_ascii_alphanumeric() || *self.get() == b'_') {
-                str_b.push(*self.get());
-            } else { break }
-
+            if !self.get().is_ascii_whitespace() && (!self.get().is_ascii_alphanumeric() || !*self.get() == b'_') {
+                break
+            }
             if self.raw_end() {break}
             self.next();
         }
-        self.cast_keyword(&str_b)
-            .unwrap_or(MToken::new(Token::Identifier, TokenMetadata {span: (0, 0), line: 0}, Some(unsafe {String::from_utf8_unchecked(str_b)})))
+        let result = &self.raw[r_span.as_range()];
+        match result {
+            b"if" => Token::new(TokenKind::If, TokenMetadata {span: r_span.as_raw(), line: 0}, result),
+            b"let" => Token::new(TokenKind::Let, TokenMetadata {span: r_span.as_raw(), line: 0}, result),
+            _ => Token::new(TokenKind::Identifier, TokenMetadata {span: r_span.as_raw(), line: 0}, result),
+        }
     }
-    fn parse_digit(&mut self) -> MToken{
-        let mut str_b = Vec::new();
+    fn parse_digit(&mut self) -> Token<'a> {
+        let r_span = self.record_span();
         loop {
-            if !self.get().is_ascii_whitespace() && self.get().is_ascii_digit() {
-                str_b.push(*self.get());
-            } else { break }
+            if !self.get().is_ascii_whitespace() && !self.get().is_ascii_digit() {
+                break
+            }
             if self.raw_end() { break }
             self.next();
         }
-        
-        MToken::new(Token::LiteralDigit, TokenMetadata {span: (0, 0), line: 0}, Some(unsafe {String::from_utf8_unchecked(str_b)}))
+        let result = &self.raw[r_span.as_range()];
+        Token::new(TokenKind::LiteralDigit, TokenMetadata {span: r_span.as_raw(), line: 0}, result)
     }
 
-    fn parse_str(&mut self) -> MToken {
-
-        let mut str_b = Vec::new();
+    fn parse_str(&mut self) -> Token<'a> {
+        let r_span = self.record_span();
         let mut c = *self.next().get();
         loop {
             if self.end() {
-                return MToken::new(Token::NONE, TokenMetadata {span: (0, 0), line: 0}, None) /*TODO: Add error*/
+                return Token::new(TokenKind::NONE, TokenMetadata {span: (0, 0), line: 0}, b"") /*TODO: Add error*/
             }
 
             if c == b'"' { self.next(); break; }
-            str_b.push(c);
             c = *self.next().get();
         }
 
-        MToken::new(Token::LiteralStr, TokenMetadata {span: (0, 0), line: 0}, Some(unsafe {String::from_utf8_unchecked(str_b)}))
+        let result = &self.raw[r_span.as_range()];
+        Token::new(TokenKind::LiteralStr, TokenMetadata {span: (0, 0), line: 0}, result)
     }
 
-    fn parse_punctuation(&mut self) -> Token {
-        match (*self.get(), *self.peek()) {
-            (b',', _) => {self.next(); Token::Comma },
-            (b'(', _) =>  {self.next(); Token::OpenParenthesis },
-            (b')', _) =>  {self.next(); Token::CloseParenthesis },
-            (b'{', _) =>  {self.next(); Token::OpenBrace },
-            (b'}', _) =>  {self.next(); Token::CloseBrace },
-            (b'.', _) =>  {self.next(); Token::Dot },
+    fn parse_punctuation(&mut self) -> Token<'a> {
+        let r_span = self.record_span();
+        let kind = match (*self.get(), *self.peek()) {
+            (b',', _) => {self.next(); TokenKind::Comma },
+            (b'(', _) =>  {self.next(); TokenKind::OpenParenthesis },
+            (b')', _) =>  {self.next(); TokenKind::CloseParenthesis },
+            (b'{', _) =>  {self.next(); TokenKind::OpenBrace },
+            (b'}', _) =>  {self.next(); TokenKind::CloseBrace },
+            (b'.', _) =>  {self.next(); TokenKind::Dot },
             (b'!', b'=') => {
                 self.next().next();
-                Token::NotEqual
+                TokenKind::NotEqual
             },
             (b'=', b'=') => {
                 self.next().next();
-                Token::Equal
+                TokenKind::Equal
             },
             (b'>', b'=') => {
                 self.next().next();
-                Token::GreaterOrEqual
+                TokenKind::GreaterOrEqual
             },
             (b'<', b'=') => {
                 self.next().next();
-                Token::LessOrEqual
+                TokenKind::LessOrEqual
             },
             (b'|', b'|') => {
                 self.next().next();
-                Token::Or
+                TokenKind::Or
             },
             (b'&', b'&') => {
                 self.next().next();
-                Token::And
+                TokenKind::And
             },
             (b'*', _) => {
                 self.next().next();
-                Token::Multiply
+                TokenKind::Multiply
             },
             (b'/', _) => {
                 self.next().next();
-                Token::Divide
+                TokenKind::Divide
             },
             (b'+', _) => {
                 self.next().next();
-                Token::Add
+                TokenKind::Add
             },
             (b'-', _) => {
                 self.next().next();
-                Token::Minus
+                TokenKind::Minus
             },
-            (b'!', _) =>  {self.next(); Token::Not },
-            (b'>', _) =>  {self.next(); Token::GreaterThan },
-            (b'<', _) =>  {self.next(); Token::LessThan },
-            (b'=', _) =>  {self.next(); Token::Assignment },
-            _ => { self.next(); Token::NONE /*TODO: Add error*/  }
-        }
+            (b'!', _) =>  {self.next(); TokenKind::Not },
+            (b'>', _) =>  {self.next(); TokenKind::GreaterThan },
+            (b'<', _) =>  {self.next(); TokenKind::LessThan },
+            (b'=', _) =>  {self.next(); TokenKind::Assignment },
+            _ => { self.next(); TokenKind::NONE /*TODO: Add error*/  }
+        };
+        let result = &self.raw[r_span.as_range()];
+        Token::new(kind, TokenMetadata {span: r_span.as_raw(), line: 0}, result)
+    }
+
+    fn record_span(&self) -> RSpan {
+        RSpan::new(self.position.get(), Rc::clone(&self.position))
     }
 
     fn raw_end(&self) -> bool {
-        self.position + 1 == self.raw.len()
+        self.position.get()+ 1 == self.raw.len()
     }
     fn end(&mut self) -> bool {
         let end = self.is_end;
-        self.is_end = self.position + 1 == self.raw.len();
+        self.is_end = self.position.get() == self.raw.len();
         end
     }
-    fn next(&mut self) -> &mut Self {
-        if self.position + 1 < self.raw.len() {
-            self.position += 1;
+    fn next(& self) -> & Self {
+        if self.position.get() + 1 < self.raw.len() {
+            self.position.set(self.position.get() + 1);
         }
         self
     }
-    fn get(&mut self) -> &u8 {
-        &self.raw[self.position]
+    fn get(&self) -> &u8 {
+        &self.raw[self.position.get()]
     }
     fn peek(&self) -> &u8 {
-        if self.position + 1 < self.raw.len() {
-            &self.raw[self.position + 1]
+        if  self.position.get() + 1 < self.raw.len() {
+            &self.raw[self.position.get() + 1 ]
         } else {
-            &self.raw[self.position]
+            &self.raw[self.position.get()]
         }
     }
 }
